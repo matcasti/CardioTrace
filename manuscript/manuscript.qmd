@@ -1,0 +1,130 @@
+---
+title: ""
+bibliography: "misc/ref.bib"
+csl: "misc/softwarex.csl"
+format: 
+  docx: 
+    reference-doc: "ref.docx"
+---
+
+**CardioTrace: A real-time event-based web interface for wearable-derived RR interval acquisition**
+
+Matías Castillo-Aguilar^1,2^, Diego Mabe-Castro^1^, Cristian Núñez-Espinosa^1,2^ \*
+
+^1^ Centro Asistencial Docente y de Investigación (CADI-UMAG), Punta Arenas, Chile.
+
+^2^ Escuela de Medicina, Universidad de Magallanes (UMAG), Punta Arenas, Chile.
+
+
+### \*Correspondence
+
+Cristian Núñez-Espinosa, Escuela de Medicina, Universidad de Magallanes, Punta Arenas, Chile. Centro Asistencial de Docencia e Investigación CADI-UMAG, Chile. e-mail: [cristian.nunez\@umag.cl](mailto:cristian.nunez@umag.cl). Address: Avenida Bulnes 01855, Box 113-D. Phone: +56 61 2201411.
+
+**Abstract**
+
+Wearable devices enable high-resolution acquisition of RR intervals, yet research-grade control over real-time data capture, event annotation, and export remains limited. We present CardioTrace, an open-source, web-based interface designed for the designed for real-time acquisition and visualization of wearable-derived RR intervals with structured event annotation. The software allows users to mark experimental phases (e.g., rest, exercise, recovery), inspect signals during acquisition, and export time-stamped data for downstream analysis. By emphasizing transparency, reproducibility, and flexible protocol design, this tool bridges the gap between consumer wearable data streams and research-oriented workflows in autonomic studies.
+
+**Keywords**: heart rate variability; RR intervals; wearable devices; Web Bluetooth API; real-time acquisition; autonomic nervous system; event annotation; open-source software.
+
+**Metadata**
+
+| Nr    | Code metadata description                      | Metadata                                                                                                                                                                                                                                  |
+|-------|------------------------------------------------|----------------------------------------------------------------|
+| C1 | Current code version                                              | V1.0.0 |
+| C2 | Permanent link to code/repository used for this code version      | <https://github.com/matcasti/cardiotrace> |
+| C3 | Permanent link to reproducible capsule                            | <https://matcasti.github.io/CardioTrace/> |
+| C4 | Legal code license                                                | MIT License. |
+| C5 | Code versioning system used                                       | git |
+| C6 | Software code languages, tools and services used                  | HTML, CSS and JavaScript |
+| C7 | Compilation requirements, operating environments and dependencies | No compilation or installation required. |
+| C8 | If available, link to developer documentation/manual              | <https://github.com/matcasti/cardiotrace> |
+| C9 | Support email for questions                                       | matias.castillo\@umag.cl                                                                                                                                                                                                                   |
+
+# 1. Motivation and significance
+
+Wearable devices capable of streaming high-resolution RR intervals (RRi) are increasingly used in exercise physiology, autonomic research, and human performance studies, among others [@castillo2025enhancing; @castillo2026immunefront; @castillo2026immune]. However, the scientific integration of wearable-derived data is often constrained by limitations at the data acquisition stage rather than by signal analysis itself. Many commercial applications focus on proprietary metrics and post-hoc summaries, offering limited access to raw data, restricted transparency, and insufficient support for precise experimental event annotation. These constraints reduce reproducibility and complicate the use of wearable data in controlled research protocols.
+
+A recurring methodological challenge in studies involving exercise or behavioral interventions is the accurate temporal alignment between physiological signals and the experimental events. In many workflows, event timing is recorded manually or reconstructed retrospectively, introducing uncertainty. While analysis-oriented tools such as Kubios HRV [@tarvainen2014kubios] and open-source libraries including NeuroKit2 [@makowski2021neurokit2] and PhysioZoo [@behar2018physiozoo] provide robust post-processing capabilities, they depend on externally acquired and pre-segmented data. Conversely, real-time monitoring platforms such as Elite HRV or Firstbeat operate as closed systems with limited control over annotation and export, leaving a gap between real-time data streams and research-grade acquisition workflows.
+
+The software presented here addressed this gap by providing an open, web-based interface for real-time RRi acquisition combined with structured, time-stamped event annotation. The application runs directly in a standard web browser and does not require local installation, lowering technical barriers and facilitating deployment across operating systems and experimental settings. To improve robustness, acquired data are automatically saved at fixed intervals during active sessions, reducing risk of data loss due to common technical interruptions such as Bluetooth disconnections or device shutdowns. 
+
+In the intended experimental setting, a researcher connects a compatible wearable device via a web browser, initiates data acquisition, annotates predefined or custom events in real time, and monitors signal quality throughout the session. Upon completion, the full dataset, including RRi and event markers, or RRi data only can be exported in both txt and csv formats for downstream analysis. By emphasizing accessibility, transparency, and fault-tolerant data handling, this software supports more rigorous and reproducible wearable-based research workflows and complements existing analysis-focused tools.
+
+# 2. Software description
+
+## 2.1. Software architecture: 
+
+CardioTrace follows a single-tier, client-side architecture that executes entirely within a standards-compliant web browser, with no server-side components or local installation requirements. The application is organised into three functional layers (Figure 1).
+
+![](figure-1.png){width=100%}
+
+**Figure 1**. Functional layers related to the foundational architecture of the CardioTrace application. The application is divided in three layers: a connectivity layer for data acquisition (left panel), a processing layer where statistics and data quality metrics are computed (middle panel), a presentation layer with plots/animations (right panel) and a persistence layer for in-browser data management (bottom panel).
+
+The **connectivity layer** interfaces with Bluetooth Low Energy (BLE) wearable devices through the Web Bluetooth API, a browser-native interface that enables direct communication with GATT-based peripherals. Upon connection, the application subscribes to two BLE services: the standard Heart Rate GATT service (UUID `0x180D`), which streams HR measurements and RR intervals via the Heart Rate Measurement characteristic (`0x2A37`), and the Polar Measurement Data (PMD) proprietary service (UUID `fb005c80`), which enables raw ECG streaming on compatible devices (e.g., Polar H10). An initial calibration window of 8 seconds is applied upon connection; data acquired during this period are discarded to ensure baseline signal stability before recording commences.
+
+The **processing layer** handles all signal operations in real time using plain JavaScript. Artifact rejection is applied to each incoming RR interval by enforcing physiological validity bounds (250–2000 ms, corresponding to heart rates of 30–200 BPM) and a maximum permissible inter-beat difference of 300 ms. Both the unfiltered (raw) and artifact-rejected (clean) streams are stored in parallel, preserving data provenance. Frequency-domain analysis uses a Lomb–Scargle periodogram [@laguna1998psd], which accommodates the non-uniform sampling of RR series without prior interpolation, followed by spectral smoothing with a five-point moving-average filter. The Stress Recovery Index (SRI) is computed as a weighted composite of three HRV metrics: RMSSD (35%), LF/HF ratio (35%), and HR Recovery Rate (30%) [@taskforce1996hrv].
+
+The **persistence and presentation layer** manages data storage and visualisation. Session data, including RR intervals, event markers, tags, and computed statistics, are persisted to the browser's IndexedDB (schema version 4) through an auto-save routine triggered every 10 seconds during active recording. Visualisation is handled by Plotly.js (v2.27.0), which renders five real-time charts: ECG waveform, RR interval series, 1-minute rolling RMSSD, Poincaré plot, and Power Spectral Density. Export utilities rely on jsPDF (v2.5.1) for PDF report generation and JSZip (v3.10.1) for bulk session download as a compressed archive.
+
+## 2.2. Software functionalities: 
+
+CardioTrace exposes the following major functionalities, grouped by workflow stage.
+
+**Device connection and calibration.** The user initiates a BLE scan through the browser's device picker, which filters for devices advertising the Heart Rate GATT service. Upon pairing, the application enters an 8-second calibration period before data recording begins, ensuring that transient artefacts introduced at connection do not contaminate the session record. Battery level and signal quality are monitored continuously throughout the session.
+
+**Real-time data acquisition and artifact filtering.** RR intervals are extracted from each incoming HR Measurement notification. Critically, R-wave detection is performed entirely onboard the wearable device by its proprietary firmware; for the Polar H10, this algorithm has been independently validated against electrocardiographic reference standards across a range of physical activity intensities [@gilgen2019rr; @schaffarczyk2022validity; @chung2026validity], rendering additional R-peak detection at the software level unnecessary. The intervals received by the application therefore represent already-identified inter-beat intervals rather than raw ECG samples. The artifact rejection implemented in CardioTrace constitutes a supplementary quality-control layer, addressing residual transmission errors, isolated ectopic beats, or motion-induced outliers, and operates through two sequential criteria: a physiological bounds check (250–2000 ms, corresponding to 30–200 BPM) followed by an inter-beat difference gate (≤300 ms). Intervals passing both criteria are appended to the cleaned stream; all intervals received after calibration, regardless of validity, are preserved in a parallel raw stream. For compatible devices, raw ECG data are simultaneously streamed via the Polar PMD service.
+
+**Event annotation.** At any point during a session, the researcher may insert a time-stamped event marker by activating the Mark Event panel. Eight predefined event types are available (Start, Exercise, Rest, Peak, Recovery, Breathe, Note, and Custom), each optionally accompanied by a free-text annotation. Event timestamps are stored relative to the post-calibration recording onset and are embedded in all export formats.
+
+**Session tagging and automatic persistence.** Researchers may attach one or more descriptive tags to a session (e.g., participant identifier, experimental condition) prior to or during recording. Session data, including both RR streams, event markers, computed statistics, and tags, are automatically saved to the browser's IndexedDB every 10 seconds, providing fault tolerance against Bluetooth disconnections or browser interruptions.
+
+**Real-time metrics and visualisation.** The interface displays instantaneous heart rate (BPM), sample count, 1-minute rolling average RR interval (ms), and 1-minute rolling RMSSD (ms) during acquisition. Five interactive charts update continuously: (i) ECG signal trace; (ii) RR interval time series with event marker overlays; (iii) rolling RMSSD; (iv) Poincaré plot (RR*ₙ* vs. RR*ₙ*₊₁); and (v) Lomb–Scargle Power Spectral Density [@laguna1998psd] with annotated VLF (0.003–0.04 Hz), LF (0.04–0.15 Hz), and HF (0.15–0.40 Hz) bands and LF/HF ratio [@taskforce1996hrv]. A five-zone heart rate classification scheme is also displayed in real time. The SRI gauge (0–100 scale) provides a composite indicator of autonomic balance.
+
+**Data export.** Upon session completion, data may be exported as: (i) a CSV file containing timestamped RR intervals and event markers with a structured metadata header; (ii) a plain TXT file containing RR interval values only, suitable for direct import into analysis tools; or (iii) a formatted PDF report summarising session statistics and chart snapshots. Multiple sessions stored in history can be downloaded simultaneously as a ZIP archive.
+
+**Session history management.** All sessions saved to IndexedDB are accessible through the history panel, which supports full-text search, tag-based filtering, and sorting by date or duration. Sessions can be individually restored to the active interface, re-exported in any supported format, or permanently deleted.
+
+# 3. Illustrative examples
+
+The following example illustrates a complete data acquisition workflow for a structured exercise-recovery protocol, representing a typical use case in autonomic research.
+
+**Scenario:** A researcher aims to characterise the acute autonomic response to a submaximal cycling bout and subsequent passive recovery, using a Polar H10 chest-strap worn by a healthy participant.
+
+**Step 1: Device connection.** The researcher navigates to the CardioTrace application in a Web Bluetooth-compatible browser (e.g., Google Chrome ≥56 on desktop or Android), attaches the Polar H10 to the participant, and clicks *Connect Device*. The browser device picker displays available BLE peripherals; the researcher selects the Polar H10. The application negotiates both the HR GATT and Polar PMD services, initiates an 8-second calibration period, and then begins recording. Battery level, signal quality, and HR zone are displayed in the connection panel.
+
+**Step 2: Baseline recording and event marking.** The participant remains seated at rest for five minutes. The researcher observes rising RMSSD values and an SRI score in the *Good–Excellent* range. At the onset of the rest phase, the researcher opens the Mark Event panel and inserts a *Start* event with the annotation "baseline rest". Event markers are visible as vertical lines on the RR interval and rolling RMSSD charts.
+
+**Step 3: Exercise phase.** The participant begins cycling at 70% of their estimated maximum heart rate. The researcher marks an *Exercise* event at the transition. In real time, the RR interval chart shows a progressive decrease in inter-beat intervals, the rolling RMSSD declines, and the SRI score falls as the LF/HF ratio increases and parasympathetic modulation is withdrawn. The Poincaré plot compresses along the SD1 axis, reflecting reduced short-term variability. The HR zone indicator transitions from Zone 2 (Endurance) to Zone 3–4 (Tempo/Threshold).
+
+**Step 4: Recovery phase.** At the cessation of exercise, the researcher marks a *Recovery* event. Over the following minutes, progressive restoration of RR interval variability is evident across all panels. A *Rest* event is marked once the SRI returns to pre-exercise levels.
+
+**Step 5: Session export.** The researcher enters a session label in the filename field, adds tags (e.g., `participant-01`, `cycling`), and clicks *Download*. With the CSV format selected and the *Include raw data* toggle disabled, a file is generated containing the artifact-filtered RR series with embedded event markers and a structured metadata header recording session date, duration, data quality, and event count. The same data may also be exported as a TXT file for direct import into downstream analysis tools such as Kubios HRV [@tarvainen2014kubios] or the NeuroKit2 Python library [@makowski2021neurokit2]. A PDF report summarising session statistics and chart snapshots is generated via the *Report* button.
+
+The session is automatically preserved in the history panel under the assigned tags and is retrievable for re-export or review in future browser sessions.
+
+# 4. Impact
+
+The software enables new lines of inquiry by facilitating experimental designs that rely on precise, real-time alignment between physiological signals and experimental events. In particular, it supports phase-specific and event-driven analyses in exercise, recovery, and behavioral intervention studies, where transitions between conditions are critical and difficult to reconstruct retrospectively. By allowing structured annotation during data acquisition, the software makes it feasible to investigate transient autonomic responses, rapid recovery dynamics, and protocol-dependent signal segmentation using wearable-derived RRi. In the context of existing research questions, the software improves methodological rigor by reducing uncertainty associated with post-hoc event reconstruction and manual synchronization. 
+
+Compared with workflows that rely on external logging or proprietary applications, the integrated acquisition and annotation approach enables temporal precision and data traceability. The automatic data persistence mechanism further increases robustness by mitigating data loss caused by common technical interruptions, thereby improving data completeness in wearable-based experiments
+
+The software has also influenced daily research practice by simplifying experimental setup and lowering technical barriers to wearable data acquisition. Its browser-based design eliminates the need for local installation or platform-specific software, enabling rapid deployment across operating systems and experimental environments. This accessibility facilitates use by multidisciplinary teams and supports both laboratory and field-based data collection with minimal technical overhead.
+
+At the time of writing, the software is primarily used in stress-recovery paradigm studies, including longevity and aging health, sports and exercise, and extreme-environment exposure. 
+
+The open-source release of CardioTrace under a permissive license ensures that the complete acquisition workflow is transparent, auditable, and independently reproducible. Because the application is implemented in standard web technologies, without compiled binaries, proprietary runtime dependencies, or external data transmission, any researcher can inspect, adapt, or extend the source code to accommodate protocol-specific requirements. This openness complements reproducibility at the analysis stage by ensuring that the full data acquisition chain, from BLE communication parameters and calibration logic to artifact-rejection thresholds and export formatting, is equally documented and verifiable. The structured metadata header embedded in every exported file further supports provenance tracking by encoding session date, duration, data quality metrics, and event inventory alongside the raw signal data.
+
+The software is not currently used in commercial settings and has not led to the creation of spin-off companies. However, its modular and web-based architecture allows adaptation for applied contexts such as performance monitoring, rehabilitation research, or digital health prototyping, when reliable real-time data acquisition and annotation are required.
+
+# 5. Conclusions
+
+CardioTrace addresses a specific and practically significant gap in wearable-based physiological research: the absence of an open, browser-native interface that combines real-time RR interval acquisition, structured event annotation, and fault-tolerant session persistence without requiring local software installation. By leveraging the Web Bluetooth API, the application operates across operating systems and experimental settings with minimal technical overhead, while the underlying signal processing pipeline, including physiological artifact rejection, Lomb–Scargle spectral estimation, and composite SRI computation, is fully transparent and reproducible.
+
+The software is primarily intended as a data acquisition and annotation instrument rather than a comprehensive HRV analysis platform. It is designed to complement, rather than replace, established analysis tools such as Kubios HRV [@tarvainen2014kubios] or NeuroKit2 [@makowski2021neurokit2], to which its CSV and TXT outputs are directly compatible. Future development may extend device compatibility through the Web Bluetooth Assigned Numbers registry, introduce adaptive artifact-rejection thresholds, and provide configurable spectral parameters to accommodate research protocols operating outside the standard HRV frequency bands.
+
+By making real-time annotation and fault-tolerant acquisition accessible through a standard web browser, CardioTrace lowers the methodological barrier to rigorous wearable-based research and supports more reproducible experimental workflows in autonomic physiology.
+
+# References 
+
+::: {#refs}
+:::
