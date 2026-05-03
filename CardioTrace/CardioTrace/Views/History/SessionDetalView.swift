@@ -18,15 +18,12 @@ struct SessionDetailView: View {
 
     @State private var showRestoreConfirm = false
     @State private var showDeleteConfirm  = false
-    @State private var showShareSheet     = false
-    @State private var shareURL:  URL?
     @State private var exportRROnly       = false
     @State private var exportIncludeRaw   = false
     @State private var isRenaming         = false
     @State private var renameText         = ""
-    @State private var reportURL:         URL?
-    @State private var showReportSheet    = false
     @State private var isGeneratingReport = false
+    @State private var activeURL: URL?
 
     var body: some View {
         ScrollView {
@@ -47,11 +44,8 @@ struct SessionDetailView: View {
         .navigationTitle(session.filename)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarItems }
-        .sheet(isPresented: $showShareSheet) {
-                    if let url = shareURL { ShareSheet(items: [url]) }
-        }
-        .sheet(isPresented: $showReportSheet) {
-            if let url = reportURL { ShareSheet(items: [url]) }
+        .sheet(item: $activeURL) { url in
+            ShareSheet(items: [url])
         }
         .alert("Rename Session", isPresented: $isRenaming) {
             TextField("Name", text: $renameText)
@@ -239,8 +233,7 @@ struct SessionDetailView: View {
 
             HStack(spacing: 10) {
                     Button {
-                        shareURL = buildExportFile()
-                        showShareSheet = true
+                        activeURL = buildExportFile()
                     } label: {
                         Label("Share File", systemImage: "square.and.arrow.up")
                             .frame(maxWidth: .infinity)
@@ -261,9 +254,8 @@ struct SessionDetailView: View {
                 Button {
                     isGeneratingReport = true
                     Task {
-                        reportURL = await ReportGenerator.generate(session: session)
+                        activeURL = await ReportGenerator.generate(session: session)
                         isGeneratingReport = false
-                        showReportSheet = reportURL != nil
                     }
                 } label: {
                     HStack(spacing: 8) {

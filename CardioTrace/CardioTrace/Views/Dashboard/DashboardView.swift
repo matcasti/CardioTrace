@@ -516,8 +516,7 @@ struct ExportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var includeRaw = false
     @State private var rrOnly     = false
-    @State private var shareURL:  URL?
-    @State private var reportURL:         URL?
+    @State private var shareURL: URL?
     @State private var isGeneratingReport = false
 
     var body: some View {
@@ -546,7 +545,7 @@ struct ExportSheet: View {
                     Button {
                         isGeneratingReport = true
                         Task {
-                            reportURL = await ReportGenerator.generate(vm: vm)
+                            shareURL = await ReportGenerator.generate(vm: vm)
                             isGeneratingReport = false
                         }
                     } label: {
@@ -567,9 +566,6 @@ struct ExportSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
             }
             .sheet(item: $shareURL) { url in
-                ShareSheet(items: [url])
-            }
-            .sheet(item: $reportURL) { url in
                 ShareSheet(items: [url])
             }
         }
@@ -605,11 +601,11 @@ struct SRIInfoSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Group {
                         SRIInfoBlock(title: "What is SRI?",
-                            body: "The Stress Recovery Index (SRI) is a composite score (0–100) quantifying autonomic nervous system balance. Higher scores indicate better parasympathetic activity and stress resilience.")
+                            content: "The Stress Recovery Index (SRI) is a composite score (0–100) that quantifies your autonomic nervous system balance and recovery capacity. Higher scores indicate better stress resilience and parasympathetic activity.")
                         SRIInfoBlock(title: "Components",
-                            body: "35% RMSSD · 35% LF/HF Ratio · 30% HR Recovery Rate")
+                            content: "35% RMSSD · 35% LF/HF Ratio · 30% HR Recovery Rate")
                         SRIInfoBlock(title: "Interpretation",
-                            body: "75–100 Excellent · 55–74 Good · 35–54 Fair · 0–34 Poor")
+                            content: "75–100 Excellent · 55–74 Good · 35–54 Fair · 0–34 Poor")
                     }
                     .padding(.horizontal)
                 }
@@ -625,11 +621,11 @@ struct SRIInfoSheet: View {
 }
 
 struct SRIInfoBlock: View {
-    let title: String; let body: String
+    let title: String; let content: String
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.headline.weight(.bold))
-            Text(body).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(content).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

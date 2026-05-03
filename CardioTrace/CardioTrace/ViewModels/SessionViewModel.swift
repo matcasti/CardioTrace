@@ -206,8 +206,8 @@ final class SessionViewModel: ObservableObject {
         let tsSnap = timestamps
         Task.detached(priority: .utility) { [weak self] in
             guard let self = self else { return }
-            let psd = self.engine.calculatePSD(rr: rrSnap, times: tsSnap)
-            let sri = self.engine.calculateSRI(rr: rrSnap, times: tsSnap, psdResult: psd)
+            let psd = await self.engine.calculatePSD(rr: rrSnap, times: tsSnap)
+            let sri = await self.engine.calculateSRI(rr: rrSnap, times: tsSnap, psdResult: psd)
             await MainActor.run {
                 self.psdResult = psd
                 if let s = sri {
@@ -337,7 +337,7 @@ final class SessionViewModel: ObservableObject {
 
         Task.detached(priority: .utility) { [weak self] in
             guard let self = self else { return }
-            let psd = self.engine.calculatePSD(rr: self.rrIntervals, times: self.timestamps)
+            let psd = await self.engine.calculatePSD(rr: self.rrIntervals, times: self.timestamps)
             await MainActor.run { self.psdResult = psd }
         }
     }
