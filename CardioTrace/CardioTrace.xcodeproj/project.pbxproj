@@ -6,7 +6,40 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		603948712FA9186100A524B1 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 603948702FA9186100A524B1 /* WidgetKit.framework */; };
+		603948732FA9186100A524B1 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 603948722FA9186100A524B1 /* SwiftUI.framework */; };
+		603948822FA9186300A524B1 /* CardioTraceActivityWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 6039486E2FA9186100A524B1 /* CardioTraceActivityWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		603948802FA9186300A524B1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 609E0A322FA7E57900ABAD13 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6039486D2FA9186100A524B1;
+			remoteInfo = CardioTraceActivityWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		603948872FA9186300A524B1 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				603948822FA9186300A524B1 /* CardioTraceActivityWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		6039486E2FA9186100A524B1 /* CardioTraceActivityWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CardioTraceActivityWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		603948702FA9186100A524B1 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		603948722FA9186100A524B1 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		609E0A3A2FA7E57900ABAD13 /* CardioTrace.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CardioTrace.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -18,13 +51,36 @@
 			);
 			target = 609E0A392FA7E57900ABAD13 /* CardioTrace */;
 		};
+		603948862FA9186300A524B1 /* Exceptions for "CardioTraceActivityWidget" folder in "CardioTraceActivityWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 6039486D2FA9186100A524B1 /* CardioTraceActivityWidgetExtension */;
+		};
+		603948892FA919D700A524B1 /* Exceptions for "CardioTrace" folder in "CardioTraceActivityWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				LiveActivity/CardioTraceAttributes.swift,
+			);
+			target = 6039486D2FA9186100A524B1 /* CardioTraceActivityWidgetExtension */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		603948742FA9186100A524B1 /* CardioTraceActivityWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				603948862FA9186300A524B1 /* Exceptions for "CardioTraceActivityWidget" folder in "CardioTraceActivityWidgetExtension" target */,
+			);
+			path = CardioTraceActivityWidget;
+			sourceTree = "<group>";
+		};
 		609E0A3C2FA7E57900ABAD13 /* CardioTrace */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				603948662FA8D8D100A524B1 /* Exceptions for "CardioTrace" folder in "CardioTrace" target */,
+				603948892FA919D700A524B1 /* Exceptions for "CardioTrace" folder in "CardioTraceActivityWidgetExtension" target */,
 			);
 			path = CardioTrace;
 			sourceTree = "<group>";
@@ -32,6 +88,15 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		6039486B2FA9186100A524B1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				603948732FA9186100A524B1 /* SwiftUI.framework in Frameworks */,
+				603948712FA9186100A524B1 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		609E0A372FA7E57900ABAD13 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -42,10 +107,21 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		6039486F2FA9186100A524B1 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				603948702FA9186100A524B1 /* WidgetKit.framework */,
+				603948722FA9186100A524B1 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		609E0A312FA7E57900ABAD13 = {
 			isa = PBXGroup;
 			children = (
 				609E0A3C2FA7E57900ABAD13 /* CardioTrace */,
+				603948742FA9186100A524B1 /* CardioTraceActivityWidget */,
+				6039486F2FA9186100A524B1 /* Frameworks */,
 				609E0A3B2FA7E57900ABAD13 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -54,6 +130,7 @@
 			isa = PBXGroup;
 			children = (
 				609E0A3A2FA7E57900ABAD13 /* CardioTrace.app */,
+				6039486E2FA9186100A524B1 /* CardioTraceActivityWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -61,6 +138,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		6039486D2FA9186100A524B1 /* CardioTraceActivityWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 603948832FA9186300A524B1 /* Build configuration list for PBXNativeTarget "CardioTraceActivityWidgetExtension" */;
+			buildPhases = (
+				6039486A2FA9186100A524B1 /* Sources */,
+				6039486B2FA9186100A524B1 /* Frameworks */,
+				6039486C2FA9186100A524B1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				603948742FA9186100A524B1 /* CardioTraceActivityWidget */,
+			);
+			name = CardioTraceActivityWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = CardioTraceActivityWidgetExtension;
+			productReference = 6039486E2FA9186100A524B1 /* CardioTraceActivityWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		609E0A392FA7E57900ABAD13 /* CardioTrace */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 609E0A452FA7E57B00ABAD13 /* Build configuration list for PBXNativeTarget "CardioTrace" */;
@@ -68,10 +167,12 @@
 				609E0A362FA7E57900ABAD13 /* Sources */,
 				609E0A372FA7E57900ABAD13 /* Frameworks */,
 				609E0A382FA7E57900ABAD13 /* Resources */,
+				603948872FA9186300A524B1 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				603948812FA9186300A524B1 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				609E0A3C2FA7E57900ABAD13 /* CardioTrace */,
@@ -93,6 +194,9 @@
 				LastSwiftUpdateCheck = 2630;
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
+					6039486D2FA9186100A524B1 = {
+						CreatedOnToolsVersion = 26.3;
+					};
 					609E0A392FA7E57900ABAD13 = {
 						CreatedOnToolsVersion = 26.3;
 					};
@@ -113,11 +217,19 @@
 			projectRoot = "";
 			targets = (
 				609E0A392FA7E57900ABAD13 /* CardioTrace */,
+				6039486D2FA9186100A524B1 /* CardioTraceActivityWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		6039486C2FA9186100A524B1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		609E0A382FA7E57900ABAD13 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -128,6 +240,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		6039486A2FA9186100A524B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		609E0A362FA7E57900ABAD13 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -137,7 +256,75 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		603948812FA9186300A524B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6039486D2FA9186100A524B1 /* CardioTraceActivityWidgetExtension */;
+			targetProxy = 603948802FA9186300A524B1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		603948842FA9186300A524B1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6DJHKWX34A;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CardioTraceActivityWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = CardioTraceActivityWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = matcasti.CardioTrace.CardioTraceActivityWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		603948852FA9186300A524B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6DJHKWX34A;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CardioTraceActivityWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = CardioTraceActivityWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = matcasti.CardioTrace.CardioTraceActivityWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		609E0A432FA7E57B00ABAD13 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -191,7 +378,10 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "bluetooth-central";
+				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
@@ -250,7 +440,10 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "bluetooth-central";
+				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
@@ -344,6 +537,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		603948832FA9186300A524B1 /* Build configuration list for PBXNativeTarget "CardioTraceActivityWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				603948842FA9186300A524B1 /* Debug */,
+				603948852FA9186300A524B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		609E0A352FA7E57900ABAD13 /* Build configuration list for PBXProject "CardioTrace" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

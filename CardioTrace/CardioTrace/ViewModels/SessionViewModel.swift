@@ -299,6 +299,7 @@ final class SessionViewModel: ObservableObject {
 
     func disconnect() {
         persistSession()
+        NotificationManager.shared.remove()   // ends Live Activity before data wipe
         bt.disconnect()
         stopAllTimers()
         resetData()

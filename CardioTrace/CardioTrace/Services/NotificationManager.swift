@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import ActivityKit
 import UIKit
 
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
@@ -8,6 +9,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private let recordingID = "cardiotrace.recording.live"
     private let ecgImageURL: URL = FileManager.default.temporaryDirectory
         .appendingPathComponent("ct_ecg_strip.png")
+
+    @available(iOS 16.2, *)
+    private var currentActivity: Activity<CardioTraceAttributes>? = nil
+    private var liveActivityStarted = false
 
     private override init() {
         super.init()
@@ -22,33 +27,32 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     // MARK: – Post / update
     func postUpdate(hr: Int, rmssd: Double, sri: Int, duration: Double) {
-        let content = UNMutableNotificationContent()
-        content.title = "● CardioTrace  —  Recording"
-        content.body  = buildBody(hr: hr, rmssd: rmssd, sri: sri, duration: duration)
-        content.sound = nil
-        content.interruptionLevel = .passive
-
-        // Attach rendered ECG strip
-        if let img  = generateECGImage(hr: hr),
-           let data = img.pngData(),
-           (try? data.write(to: ecgImageURL)) != nil,
-           let att  = try? UNNotificationAttachment(
-               identifier: "ecg_strip", url: ecgImageURL,
-               options: [UNNotificationAttachmentOptionsThumbnailClippingRectKey:
-                           CGRect(x: 0, y: 0, width: 1, height: 1) as AnyObject]) {
-            content.attachments = [att]
+        if #available(iOS 16.2, *) {
+            let state = CardioTraceAttributes.ContentState(
+                heartRate:     hr,
+                rmssd:         rmssd,
+                sriScore:      sri,
+                recordingTime: duration,
+                sriLabel:      sriLabel(for: sri)
+            )
+            if !liveActivityStarted {
+                startLiveActivity(initialState: state)
+            } else {
+                updateLiveActivity(state: state)
+            }
         }
-
-        let req = UNNotificationRequest(
-            identifier: recordingID, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
     }
 
     func remove() {
+        // Keep legacy cleanup in case any stale notifications exist
         UNUserNotificationCenter.current()
             .removePendingNotificationRequests(withIdentifiers: [recordingID])
         UNUserNotificationCenter.current()
             .removeDeliveredNotifications(withIdentifiers: [recordingID])
+
+        if #available(iOS 16.2, *) {
+            endLiveActivity()
+        }
     }
 
     // MARK: – Delegate — suppress in-app banner for our own notification
@@ -158,5 +162,59 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             parts.append("\(icon) SRI \(sri)")
         }
         return parts.joined(separator: "   ")
+    }
+
+    @available(iOS 16.2, *)
+    private func startLiveActivity(initialState: CardioTraceAttributes.ContentState) {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+
+        let attributes = CardioTraceAttributes(
+            sessionName: initialState.recordingTime > 0
+                ? "Recording" : "CardioTrace"
+        )
+        let content = ActivityContent(state: initialState, staleDate: nil)
+        do {
+            currentActivity = try Activity<CardioTraceAttributes>.request(
+                attributes: attributes,
+                content: content,
+                pushType: nil
+            )
+            liveActivityStarted = true
+        } catch {
+            print("⚠️ Live Activity start failed: \(error)")
+        }
+    }
+
+    @available(iOS 16.2, *)
+    private func updateLiveActivity(state: CardioTraceAttributes.ContentState) {
+        guard let activity = currentActivity else { return }
+        Task {
+            await activity.update(
+                ActivityContent(state: state, staleDate: Date().addingTimeInterval(30))
+            )
+        }
+    }
+
+    @available(iOS 16.2, *)
+    private func endLiveActivity() {
+        guard let activity = currentActivity else {
+            liveActivityStarted = false
+            return
+        }
+        Task {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        currentActivity = nil
+        liveActivityStarted = false
+    }
+
+    private func sriLabel(for score: Int) -> String {
+        switch score {
+        case 75...: return "Excellent"
+        case 55..<75: return "Good"
+        case 35..<55: return "Fair"
+        case 1..<35:  return "Poor"
+        default:      return "—"
+        }
     }
 }
