@@ -36,6 +36,9 @@ struct DashboardView: View {
             .sheet(isPresented: $showSRIInfo) {
                 SRIInfoSheet()
             }
+            .sheet(isPresented: $vm.showDevicePicker) {
+                DevicePickerSheet().environmentObject(vm)
+            }
         }
     }
 }
@@ -631,5 +634,56 @@ struct SRIInfoBlock: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+struct DevicePickerSheet: View {
+    @EnvironmentObject var vm: SessionViewModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if vm.discoveredDevices.isEmpty {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Scanning for Polar devices…")
+                            .foregroundStyle(.secondary)
+                    }
+                    .listRowBackground(Color.clear)
+                } else {
+                    ForEach(vm.discoveredDevices) { device in
+                        Button {
+                            vm.selectDevice(device)
+                        } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: "sensor.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(Color(hex: "#6366f1"))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(device.name)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(device.id.uuidString.prefix(8).uppercased())
+                                        .font(.caption2.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Select Device")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { vm.cancelConnect() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

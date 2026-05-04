@@ -13,6 +13,12 @@ extension CBUUID {
     static let pmdData        = CBUUID(string: "FB005C82-02E7-F387-1CAD-8ACD2D8DF0C8")
 }
 
+struct DiscoveredDevice: Identifiable {
+    let id: UUID          // peripheral.identifier
+    let name: String
+    fileprivate let peripheral: CBPeripheral
+}
+
 enum ConnectionState: Equatable {
     case idle, scanning, connecting, calibrating, connected, failed(String)
 
@@ -46,6 +52,7 @@ final class BluetoothManager: NSObject, ObservableObject {
     @Published var batteryLevel:  Int             = 0
     @Published var ecgSupported:  Bool            = false
     @Published var signalQuality: SignalQuality   = .unknown
+    @Published var discoveredDevices: [DiscoveredDevice] = []
 
     /// Emits (rrMs, wallClockTimestamp)
     let rrPublisher  = PassthroughSubject<(Double, Date), Never>()
@@ -73,16 +80,34 @@ final class BluetoothManager: NSObject, ObservableObject {
 
     func startScan() {
         guard central.state == .poweredOn else { return }
-        DispatchQueue.main.async { self.state = .scanning }
+        DispatchQueue.main.async {
+            self.discoveredDevices = []
+            self.state = .scanning
+        }
         central.scanForPeripherals(
             withServices: [.hrService],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
-        // Auto-cancel scan after 15 s if no device found
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard case .scanning = self?.state else { return }
             self?.central.stopScan()
             self?.state = .idle
+        }
+    }
+
+    func connect(to device: DiscoveredDevice) {
+        central.stopScan()
+        peripheral = device.peripheral
+        peripheral?.delegate = self
+        DispatchQueue.main.async { self.state = .connecting }
+        central.connect(device.peripheral, options: nil)
+    }
+
+    func cancelScan() {
+        central.stopScan()
+        DispatchQueue.main.async {
+            self.discoveredDevices = []
+            self.state = .idle
         }
     }
 
@@ -173,11 +198,17 @@ extension BluetoothManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager,
                         didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        central.stopScan()
-        self.peripheral = peripheral
-        peripheral.delegate = self
-        DispatchQueue.main.async { self.state = .connecting }
-        central.connect(peripheral, options: nil)
+        let name = peripheral.name
+            ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
+            ?? "Unknown Device"
+        let device = DiscoveredDevice(id: peripheral.identifier,
+                                      name: name,
+                                      peripheral: peripheral)
+        DispatchQueue.main.async {
+            if !self.discoveredDevices.contains(where: { $0.id == device.id }) {
+                self.discoveredDevices.append(device)
+            }
+        }
     }
 
     func centralManager(_ central: CBCentralManager,

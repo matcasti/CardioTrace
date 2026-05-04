@@ -12,6 +12,8 @@ final class SessionViewModel: ObservableObject {
     @Published var batteryLevel:    Int             = 0
     @Published var signalQuality:   SignalQuality   = .unknown
     @Published var ecgSupported:    Bool            = false
+    @Published var showDevicePicker = false
+    var discoveredDevices: [DiscoveredDevice] { bt.discoveredDevices }
 
     // MARK: – Session data
     @Published var rrIntervals:    [Double] = []
@@ -80,6 +82,7 @@ final class SessionViewModel: ObservableObject {
         bt.$ecgSupported.assign(to: \.ecgSupported, on: self).store(in: &cancellables)
 
         bt.rrPublisher
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] (rr, _) in self?.handleRR(rr) }
             .store(in: &cancellables)
 
@@ -101,6 +104,7 @@ final class SessionViewModel: ObservableObject {
         case .connected:
             break   // calibration timer fires the transition
         case .idle, .failed:
+            showDevicePicker = false
             stopAllTimers()
         default:
             break
@@ -232,6 +236,17 @@ final class SessionViewModel: ObservableObject {
     func connect() {
         resetData()
         bt.startScan()
+        showDevicePicker = true
+    }
+
+    func selectDevice(_ device: DiscoveredDevice) {
+        showDevicePicker = false
+        bt.connect(to: device)
+    }
+
+    func cancelConnect() {
+        showDevicePicker = false
+        bt.cancelScan()
     }
 
     func disconnect() {

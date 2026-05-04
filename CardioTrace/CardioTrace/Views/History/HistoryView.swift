@@ -11,6 +11,8 @@ struct HistoryView: View {
     @State private var selectedTag  = ""
     @State private var sortOrder    = SortOrder.newest
     @State private var selectedSession: HRVSession?
+    @State private var sessionToRename: HRVSession? = nil
+    @State private var renameText = ""
 
     enum SortOrder: String, CaseIterable, Identifiable {
         case newest   = "Newest First"
@@ -97,7 +99,12 @@ struct HistoryView: View {
             // Cards
             LazyVStack(spacing: 12) {
                 ForEach(filtered) { session in
-                    SessionCardView(session: session)
+                    SessionCardView(session: session) {
+                        delete(session)
+                    } onRename: {
+                        renameText = session.filename
+                        sessionToRename = session
+                    }
                         .onTapGesture { selectedSession = session }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
@@ -120,6 +127,14 @@ struct HistoryView: View {
             .padding(.bottom, 24)
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .alert("Rename Session", isPresented: Binding(
+            get: { sessionToRename != nil },
+            set: { if !$0 { sessionToRename = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Save") { commitRename() }
+            Button("Cancel", role: .cancel) { sessionToRename = nil }
+        }
     }
 
     private var tagStrip: some View {
@@ -155,8 +170,18 @@ struct HistoryView: View {
     // MARK: – Actions
 
     private func delete(_ session: HRVSession) {
+        if selectedSession?.id == session.id { selectedSession = nil }
         modelContext.delete(session)
         try? modelContext.save()
+    }
+
+    private func commitRename() {
+        guard let s = sessionToRename else { return }
+        let name = renameText.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        s.filename = name
+        try? modelContext.save()
+        sessionToRename = nil
     }
 
     private func restore(_ session: HRVSession) {
@@ -187,6 +212,8 @@ struct TagFilterChip: View {
 // MARK: – Session card
 struct SessionCardView: View {
     let session: HRVSession
+    var onDelete: (() -> Void)? = nil
+    var onRename: (() -> Void)? = nil
 
     private var sriColor: Color {
         switch session.sriScore {
@@ -279,6 +306,20 @@ struct SessionCardView: View {
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 20))
+
+        .contextMenu {
+            Button {
+                onRename?()
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+            Divider()
+            Button(role: .destructive) {
+                onDelete?()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 
     private func formatDuration(_ s: Double) -> String {
