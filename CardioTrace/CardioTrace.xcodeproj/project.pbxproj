@@ -273,7 +273,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 6DJHKWX34A;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = CardioTraceActivityWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = CardioTraceActivityWidget;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -303,7 +303,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 6DJHKWX34A;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = CardioTraceActivityWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = CardioTraceActivityWidget;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
