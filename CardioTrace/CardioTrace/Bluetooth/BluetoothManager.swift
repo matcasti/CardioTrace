@@ -64,6 +64,7 @@ final class BluetoothManager: NSObject, ObservableObject {
     private var pmdControlChar:  CBCharacteristic?
     private var restoredPeripheral: CBPeripheral?
     private var pmdDataChar:     CBCharacteristic?
+    private var pendingScan = false
 
     private var lastPacketTime   = Date()
     private var signalTimer:     Timer?
@@ -81,7 +82,11 @@ final class BluetoothManager: NSObject, ObservableObject {
     // MARK: – Public API
 
     func startScan() {
-        guard central.state == .poweredOn else { return }
+        guard central.state == .poweredOn else {
+            pendingScan = true   // will fire once BT powers on
+            return
+        }
+        pendingScan = false
         DispatchQueue.main.async {
             self.discoveredDevices = []
             self.state = .scanning
@@ -193,6 +198,14 @@ final class BluetoothManager: NSObject, ObservableObject {
 extension BluetoothManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard central.state == .poweredOn else { return }
+
+        // Resume a scan that was requested before Bluetooth was ready
+        if pendingScan {
+            pendingScan = false
+            startScan()
+            return
+        }
+
         guard let p = restoredPeripheral ?? peripheral else { return }
         switch p.state {
         case .connected:

@@ -13,7 +13,7 @@ final class SessionViewModel: ObservableObject {
     @Published var signalQuality:   SignalQuality   = .unknown
     @Published var ecgSupported:    Bool            = false
     @Published var showDevicePicker = false
-    var discoveredDevices: [DiscoveredDevice] { bt.discoveredDevices }
+    @Published var discoveredDevices: [DiscoveredDevice] = []
 
     // MARK: – Session data
     @Published var rrIntervals:    [Double] = []
@@ -87,6 +87,11 @@ final class SessionViewModel: ObservableObject {
         bt.$batteryLevel.assign(to: \.batteryLevel, on: self).store(in: &cancellables)
         bt.$signalQuality.assign(to: \.signalQuality, on: self).store(in: &cancellables)
         bt.$ecgSupported.assign(to: \.ecgSupported, on: self).store(in: &cancellables)
+
+        bt.$discoveredDevices
+            .receive(on: DispatchQueue.main)
+            .assign(to: \.discoveredDevices, on: self)
+            .store(in: &cancellables)
 
         bt.rrPublisher
             .receive(on: DispatchQueue.main)
@@ -189,6 +194,13 @@ final class SessionViewModel: ObservableObject {
             lastValidRR = rr
             let hr = 60000 / rr
             if hr > peakHR { peakHR = hr }
+
+            // Refresh chart data and cheap 1-min metrics on every valid beat
+            updateChartArrays()
+            let rec = zip(rrIntervals, timestamps)
+                .filter { $0.1 >= t - 60 }.map { $0.0 }
+            if !rec.isEmpty   { avgRR = engine.calculateMeanRR(rec) }
+            if rec.count >= 2 { rmssd = engine.calculateRMSSD(rec) }
         }
 
         dataQuality = rrIntervals.isEmpty ? 100 :
@@ -223,16 +235,6 @@ final class SessionViewModel: ObservableObject {
     private func refreshMetrics() {
         guard !isRefreshing, rrIntervals.count >= 2 else { return }
         isRefreshing = true
-
-        // ── Fast metrics on the main thread ──────────────────────────────
-        let now = timestamps.last ?? 0
-        let rec = zip(rrIntervals, timestamps)
-            .filter { $0.1 >= now - 60 }.map { $0.0 }
-        if !rec.isEmpty    { avgRR = engine.calculateMeanRR(rec) }
-        if rec.count >= 2  { rmssd = engine.calculateRMSSD(rec) }
-
-        // Push decimated snapshot to charts — no layout thrash on every beat
-        updateChartArrays()
 
         // ── Heavy work off the main thread ───────────────────────────────
         let rrSnap = rrIntervals
