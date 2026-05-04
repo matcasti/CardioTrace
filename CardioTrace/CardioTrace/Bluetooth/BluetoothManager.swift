@@ -62,6 +62,7 @@ final class BluetoothManager: NSObject, ObservableObject {
     private var central:         CBCentralManager!
     private var peripheral:      CBPeripheral?
     private var pmdControlChar:  CBCharacteristic?
+    private var restoredPeripheral: CBPeripheral?
     private var pmdDataChar:     CBCharacteristic?
 
     private var lastPacketTime   = Date()
@@ -72,7 +73,8 @@ final class BluetoothManager: NSObject, ObservableObject {
         // CBCentralManagerOptionRestoreIdentifierKey enables background state restoration
         central = CBCentralManager(
             delegate: self,
-            queue: DispatchQueue.global(qos: .userInitiated)
+            queue: DispatchQueue.global(qos: .userInitiated),
+            options: [CBCentralManagerOptionRestoreIdentifierKey: "com.cardiotrace.central"]
         )
     }
 
@@ -190,9 +192,30 @@ final class BluetoothManager: NSObject, ObservableObject {
 // MARK: – CBCentralManagerDelegate
 extension BluetoothManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        if central.state == .poweredOn {
-            // Attempt reconnect if previously connected
+        guard central.state == .poweredOn else { return }
+        guard let p = restoredPeripheral ?? peripheral else { return }
+        switch p.state {
+        case .connected:
+            p.discoverServices([.hrService, .batteryService, .pmdService])
+            monitorSignal()
+            DispatchQueue.main.async { self.state = .connected }
+        case .connecting:
+            break   // already in progress, wait for didConnect
+        case .disconnected, .disconnecting:
+            central.connect(p, options: nil)
+        @unknown default:
+            break
         }
+        restoredPeripheral = nil
+    }
+
+    func centralManager(_ central: CBCentralManager,
+                        willRestoreState dict: [String: Any]) {
+        guard let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
+              let p = peripherals.first else { return }
+        p.delegate = self
+        peripheral = p
+        restoredPeripheral = p
     }
 
     func centralManager(_ central: CBCentralManager,
