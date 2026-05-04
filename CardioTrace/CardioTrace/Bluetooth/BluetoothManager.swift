@@ -65,8 +65,7 @@ final class BluetoothManager: NSObject, ObservableObject {
         // CBCentralManagerOptionRestoreIdentifierKey enables background state restoration
         central = CBCentralManager(
             delegate: self,
-            queue: DispatchQueue.global(qos: .userInitiated),
-            options: [CBCentralManagerOptionRestoreIdentifierKey: "CardioTraceCentral"]
+            queue: DispatchQueue.global(qos: .userInitiated)
         )
     }
 
@@ -168,17 +167,6 @@ extension BluetoothManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
             // Attempt reconnect if previously connected
-        }
-    }
-
-    func centralManager(_ central: CBCentralManager,
-                        willRestoreState dict: [String: Any]) {
-        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
-           let p = peripherals.first {
-            peripheral = p
-            p.delegate = self
-            DispatchQueue.main.async { self.state = .connected }
-            monitorSignal()
         }
     }
 

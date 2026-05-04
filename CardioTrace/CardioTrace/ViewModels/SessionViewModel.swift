@@ -115,16 +115,18 @@ final class SessionViewModel: ObservableObject {
         var elapsed = 0.0
         calibTimer?.invalidate()
         calibTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            elapsed += 0.1
-            self.calibrationProgress = min(1, elapsed / self.CALIBRATION_SECS)
-            if elapsed >= self.CALIBRATION_SECS {
-                self.calibTimer?.invalidate()
-                self.calibrationStartWall = Date()
-                self.isCalibrating = false
-                self.connectionState = .connected
-                self.startTimers()
-                self.createNewSession()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                elapsed += 0.1
+                self.calibrationProgress = min(1, elapsed / self.CALIBRATION_SECS)
+                if elapsed >= self.CALIBRATION_SECS {
+                    self.calibTimer?.invalidate()
+                    self.calibrationStartWall = Date()
+                    self.isCalibrating = false
+                    self.connectionState = .connected
+                    self.startTimers()
+                    self.createNewSession()
+                }
             }
         }
     }
@@ -133,18 +135,24 @@ final class SessionViewModel: ObservableObject {
         // Recording clock
         recTimer?.invalidate()
         recTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self = self, let start = self.calibrationStartWall else { return }
-            self.recordingTime = -start.timeIntervalSinceNow
+            Task { @MainActor [weak self] in
+                guard let self, let start = self.calibrationStartWall else { return }
+                self.recordingTime = -start.timeIntervalSinceNow
+            }
         }
         // Metrics refresh (every 2 s)
         metricsTimer?.invalidate()
         metricsTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            self?.refreshMetrics()
+            Task { @MainActor [weak self] in
+                self?.refreshMetrics()
+            }
         }
         // Auto-save every 10 s
         saveTimer?.invalidate()
         saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            self?.persistSession()
+            Task { @MainActor [weak self] in
+                self?.persistSession()
+            }
         }
     }
 
