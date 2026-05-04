@@ -197,15 +197,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     @available(iOS 16.2, *)
     private func endLiveActivity() {
-        guard let activity = currentActivity else {
-            liveActivityStarted = false
-            return
-        }
-        Task {
-            await activity.end(nil, dismissalPolicy: .immediate)
-        }
-        currentActivity = nil
         liveActivityStarted = false
+        guard let activity = currentActivity else { return }
+        let activityToEnd = activity
+        currentActivity = nil
+        Task {
+            await activityToEnd.end(
+                ActivityContent(state: activityToEnd.content.state, staleDate: nil),
+                dismissalPolicy: .immediate
+            )
+        }
     }
 
     private func sriLabel(for score: Int) -> String {

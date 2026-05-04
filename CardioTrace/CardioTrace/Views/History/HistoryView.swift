@@ -226,7 +226,7 @@ struct SessionCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
 
             // ── Header row
             HStack(alignment: .top) {
@@ -247,7 +247,7 @@ struct SessionCardView: View {
                 // SRI badge
                 VStack(spacing: 2) {
                     Text(session.sriScore > 0 ? "\(session.sriScore)" : "--")
-                        .font(.system(size: 26, weight: .black, design: .rounded))
+                        .font(.system(size: 22, weight: .black, design: .rounded))
                         .foregroundStyle(sriColor)
                     Text("SRI")
                         .font(.system(size: 9, weight: .bold))
@@ -299,7 +299,8 @@ struct SessionCardView: View {
                 }
             }
         }
-        .padding()
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .background(.ultraThinMaterial)
         .overlay(
             RoundedRectangle(cornerRadius: 20)

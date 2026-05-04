@@ -68,10 +68,11 @@ final class SessionViewModel: ObservableObject {
     private let CALIBRATION_SECS = 8.0
     private let ECG_BUFFER       = 650
 
-    private var calibTimer:  Timer?
-    private var recTimer:    Timer?
-    private var saveTimer:   Timer?
-    private var metricsTimer: Timer?
+    private var calibTimer:    Timer?
+    private var recTimer:      Timer?
+    private var saveTimer:     Timer?
+    private var metricsTimer:  Timer?
+    private var liveActivityTimer: Timer?
 
     init() { setupSubscriptions() }
 
@@ -142,6 +143,13 @@ final class SessionViewModel: ObservableObject {
                     self.connectionState = .connected
                     self.startTimers()
                     self.createNewSession()
+                    // Start Live Activity immediately — don't wait for the 10-s save timer
+                    NotificationManager.shared.postUpdate(
+                        hr: self.heartRate,
+                        rmssd: 0,
+                        sri: 0,
+                        duration: 0
+                    )
                 }
             }
         }
@@ -170,12 +178,26 @@ final class SessionViewModel: ObservableObject {
                 self?.persistSession()
             }
         }
+
+        // Live Activity refresh every 2 s
+        liveActivityTimer?.invalidate()
+        liveActivityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isConnected else { return }
+                NotificationManager.shared.postUpdate(
+                    hr:       self.heartRate,
+                    rmssd:    self.rmssd,
+                    sri:      self.sriScore,
+                    duration: self.recordingTime
+                )
+            }
+        }
     }
 
     private func stopAllTimers() {
         NotificationManager.shared.remove()
-        [calibTimer, recTimer, metricsTimer, saveTimer].forEach { $0?.invalidate() }
-        calibTimer = nil; recTimer = nil; metricsTimer = nil; saveTimer = nil
+        [calibTimer, recTimer, metricsTimer, saveTimer, liveActivityTimer].forEach { $0?.invalidate() }
+        calibTimer = nil; recTimer = nil; metricsTimer = nil; saveTimer = nil; liveActivityTimer = nil
         recordingTime = 0
     }
 

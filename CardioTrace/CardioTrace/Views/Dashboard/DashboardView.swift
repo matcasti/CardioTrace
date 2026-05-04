@@ -10,7 +10,7 @@ struct DashboardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: 14) {
                     if vm.isCalibrating {
                         CalibrationBanner(progress: vm.calibrationProgress)
                     }
@@ -75,7 +75,7 @@ struct ConnectionCard: View {
     @Binding var showExport: Bool
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 10) {
             HStack {
                 Label("Connection", systemImage: "antenna.radiowaves.left.and.right")
                     .font(.headline.weight(.bold))
@@ -243,7 +243,7 @@ struct StatsGridView: View {
     @EnvironmentObject var vm: SessionViewModel
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
             StatCard(label: "Heart Rate",
                      value: vm.heartRate > 0 ? "\(vm.heartRate)" : "--",
                      unit: "BPM", gradient: ["#6366f1", "#ec4899"],
@@ -269,42 +269,49 @@ struct StatCard: View {
     let value:    String
     let unit:     String
     let gradient: [String]
-    var isActive: Bool = false   // enables pulsing glow (used for the live HR card)
+    var isActive: Bool = false
 
     @State private var glowing = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.caption.weight(.bold)).textCase(.uppercase).kerning(0.5)
+                .font(.system(size: 9, weight: .bold))
+                .textCase(.uppercase)
+                .kerning(0.8)
                 .foregroundStyle(.secondary)
 
-            HStack(alignment: .lastTextBaseline, spacing: 3) {
+            HStack(alignment: .lastTextBaseline, spacing: 2) {
                 Text(value)
-                    .font(.system(size: 34, weight: .black, design: .rounded))
+                    .font(.system(size: 26, weight: .black, design: .rounded))
                     .foregroundStyle(LinearGradient(
                         colors: gradient.map { Color(hex: $0) },
                         startPoint: .topLeading, endPoint: .bottomTrailing))
                     .contentTransition(.numericText())
                     .animation(.spring(duration: 0.4), value: value)
                 if !unit.isEmpty {
-                    Text(unit).font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    Text(unit)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.quaternary)
+                        .padding(.bottom, 2)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .background(.ultraThinMaterial)
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.08), lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        // Pulsing glow halo when actively recording
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(
-            color: isActive ? Color(hex: gradient[0]).opacity(glowing ? 0.55 : 0.10) : .clear,
-            radius: glowing ? 18 : 4,
-            x: 0, y: 0
+            color: isActive ? Color(hex: gradient[0]).opacity(glowing ? 0.4 : 0.08) : .clear,
+            radius: glowing ? 12 : 3, x: 0, y: 0
         )
         .animation(
-            isActive ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true) : .default,
+            isActive ? .easeInOut(duration: 1.4).repeatForever(autoreverses: true) : .default,
             value: glowing
         )
         .onAppear   { glowing = isActive }
@@ -318,7 +325,7 @@ struct SRISectionView: View {
     @Binding var showInfo: Bool
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Stress Recovery Index").font(.headline.weight(.bold))
@@ -332,7 +339,7 @@ struct SRISectionView: View {
 
             HStack(spacing: 20) {
                 SRIGaugeView(score: vm.sriScore)
-                    .frame(width: 150, height: 150)
+                    .frame(width: 120, height: 120)
 
                 VStack(alignment: .leading, spacing: 8) {
                     SRIMetricRow(label: "RMSSD",
@@ -357,12 +364,21 @@ struct SRISectionView: View {
 struct SRIMetricRow: View {
     let label: String; let value: String
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption.weight(.semibold)).textCase(.uppercase).foregroundStyle(.secondary)
-            Text(value).font(.system(.body, design: .rounded, weight: .bold))
+        HStack {
+            Text(label)
+                .font(.system(size: 10, weight: .bold))
+                .textCase(.uppercase)
+                .kerning(0.5)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .foregroundStyle(.primary)
         }
-        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -374,9 +390,10 @@ struct RecordingCard: View {
     @State private var recBlink = false   // drives the blinking REC dot
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 10) {
             HStack {
-                Label("Recording", systemImage: "record.circle").font(.headline.weight(.bold))
+                Label("Recording", systemImage: "record.circle").font(.subheadline.weight(.bold))
+
                 Spacer()
                 // ── Blinking REC badge + monospaced timer ──
                 HStack(spacing: 6) {

@@ -431,7 +431,8 @@ struct FlowLayout: Layout {
 private extension View {
     func cardStyle() -> some View {
         self
-            .padding()
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.ultraThinMaterial)
             .overlay(
