@@ -161,6 +161,7 @@ final class SessionViewModel: ObservableObject {
     }
 
     private func stopAllTimers() {
+        NotificationManager.shared.remove()
         [calibTimer, recTimer, metricsTimer, saveTimer].forEach { $0?.invalidate() }
         calibTimer = nil; recTimer = nil; metricsTimer = nil; saveTimer = nil
         recordingTime = 0
@@ -188,8 +189,18 @@ final class SessionViewModel: ObservableObject {
     }
 
     private func handleECG(_ samples: [Int32]) {
-        guard !isCalibrating else { return }
-        let now = Date().timeIntervalSince1970
+        guard !isCalibrating, let start = calibrationStartWall else { return }
+        // Use session-relative time (matches RR timestamp base) instead of wall clock
+        let now = -start.timeIntervalSinceNow
+
+        // Gap detection: if the app was backgrounded and BLE resumed, the previous
+        // buffer now has a stale segment. Drop it so the chart never draws a
+        // straight line across the gap.
+        if let lastT = ecgTimes.last, (now - lastT) > 1.0 {
+            ecgSamples.removeAll(keepingCapacity: true)
+            ecgTimes.removeAll(keepingCapacity: true)
+        }
+
         for (i, s) in samples.enumerated() {
             ecgSamples.append(Double(s))
             ecgTimes.append(now + Double(i) / 130.0)
@@ -333,6 +344,14 @@ final class SessionViewModel: ObservableObject {
         s.sriComponentHRRecovery  = sriComponents.hrRecovery
         s.filename = sessionFilename.isEmpty ? s.filename : sessionFilename
         try? ctx.save()
+
+        // Keep the lock-screen notification in sync (fires every 10 s from saveTimer)
+        NotificationManager.shared.postUpdate(
+            hr:       heartRate,
+            rmssd:    rmssd,
+            sri:      sriScore,
+            duration: recordingTime
+        )
     }
 
     func restoreSession(_ session: HRVSession) {

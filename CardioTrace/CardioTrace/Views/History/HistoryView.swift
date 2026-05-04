@@ -303,9 +303,16 @@ struct SessionCardView: View {
         .background(.ultraThinMaterial)
         .overlay(
             RoundedRectangle(cornerRadius: 20)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(
+                    sriColor.opacity(session.sriScore > 0 ? 0.40 : 0.08),
+                    lineWidth: session.sriScore > 0 ? 1.5 : 1
+                )
         )
         .clipShape(RoundedRectangle(cornerRadius: 20))
+        .shadow(
+            color: session.sriScore > 0 ? sriColor.opacity(0.10) : .clear,
+            radius: 8, x: 0, y: 4
+        )
 
         .contextMenu {
             Button {

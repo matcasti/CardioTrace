@@ -259,8 +259,12 @@ extension BluetoothManager: CBPeripheralDelegate {
             case .pmdControl:
                 pmdControlChar = char
                 peripheral.setNotifyValue(true, for: char)
-                // Query ECG capability
                 peripheral.writeValue(Data([0x01, 0x00]), for: char, type: .withResponse)
+                // Mirror JS: always attempt ECG start after 500 ms without waiting for a
+                // specific PMD frame type — the device will NACK silently if unsupported.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.startECGStream()
+                }
             case .pmdData:
                 pmdDataChar = char
                 peripheral.setNotifyValue(true, for: char)
@@ -278,11 +282,7 @@ extension BluetoothManager: CBPeripheralDelegate {
         case .batteryLevel:
             DispatchQueue.main.async { self.batteryLevel = Int(data[0]) }
         case .pmdControl:
-            let bytes = [UInt8](data)
-            // 0x0F = feature read response, 0x01 = ECG supported
-            if bytes.count > 1, bytes[0] == 0x0F, bytes[1] == 0x01 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.startECGStream() }
-            }
+            break   // ECG start is issued proactively in didDiscoverCharacteristics
         case .pmdData:
             parseECG(data)
         default: break

@@ -90,19 +90,24 @@ struct ECGChartView: View {
     }
 
     var body: some View {
-        Chart {
-            ForEach(Array(points.enumerated()), id: \.offset) { (_, pt) in
-                LineMark(
-                    x: .value("Time", pt.x),
-                    y: .value("µV",   pt.y)
-                )
-                .foregroundStyle(Color(hex: "#6366f1"))
-                .lineStyle(StrokeStyle(lineWidth: 1.5))
-                .interpolationMethod(.cardinal)
+        if points.isEmpty {
+            PlaceholderOverlay(icon: "📡",
+                               text: "ECG not available — device may not support streaming")
+        } else {
+            Chart {
+                ForEach(Array(points.enumerated()), id: \.offset) { (_, pt) in
+                    LineMark(
+                        x: .value("Time", pt.x),
+                        y: .value("µV",   pt.y)
+                    )
+                    .foregroundStyle(Color(hex: "#6366f1"))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .interpolationMethod(.linear)   // preserves QRS spike shape
+                }
             }
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
         }
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
     }
 }
 

@@ -16,6 +16,9 @@ struct CardioTraceApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(vm)
+                .onAppear {
+                    NotificationManager.shared.requestPermission()
+                }
         }
         .modelContainer(for: HRVSession.self)
     }

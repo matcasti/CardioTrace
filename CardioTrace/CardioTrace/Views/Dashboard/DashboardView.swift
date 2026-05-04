@@ -77,7 +77,7 @@ struct ConnectionCard: View {
     var body: some View {
         VStack(spacing: 14) {
             HStack {
-                Label("Connection", systemImage: "bluetooth")
+                Label("Connection", systemImage: "antenna.radiowaves.left.and.right")
                     .font(.headline.weight(.bold))
                 Spacer()
                 if vm.isConnected { SignalBadge(quality: vm.signalQuality) }
@@ -246,7 +246,8 @@ struct StatsGridView: View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
             StatCard(label: "Heart Rate",
                      value: vm.heartRate > 0 ? "\(vm.heartRate)" : "--",
-                     unit: "BPM", gradient: ["#6366f1", "#ec4899"])
+                     unit: "BPM", gradient: ["#6366f1", "#ec4899"],
+                     isActive: vm.isConnected)
 
             StatCard(label: "RMSSD (1 min)",
                      value: vm.rmssd > 0 ? String(format: "%.1f", vm.rmssd) : "--",
@@ -264,7 +265,13 @@ struct StatsGridView: View {
 }
 
 struct StatCard: View {
-    let label: String; let value: String; let unit: String; let gradient: [String]
+    let label:    String
+    let value:    String
+    let unit:     String
+    let gradient: [String]
+    var isActive: Bool = false   // enables pulsing glow (used for the live HR card)
+
+    @State private var glowing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -290,6 +297,18 @@ struct StatCard: View {
         .background(.ultraThinMaterial)
         .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.08), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 20))
+        // Pulsing glow halo when actively recording
+        .shadow(
+            color: isActive ? Color(hex: gradient[0]).opacity(glowing ? 0.55 : 0.10) : .clear,
+            radius: glowing ? 18 : 4,
+            x: 0, y: 0
+        )
+        .animation(
+            isActive ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true) : .default,
+            value: glowing
+        )
+        .onAppear   { glowing = isActive }
+        .onChange(of: isActive) { _, active in glowing = active }
     }
 }
 
@@ -351,20 +370,36 @@ struct SRIMetricRow: View {
 struct RecordingCard: View {
     @EnvironmentObject var vm: SessionViewModel
     @Binding var showEventSheet: Bool
-    @State private var tagText = ""
+    @State private var tagText  = ""
+    @State private var recBlink = false   // drives the blinking REC dot
 
     var body: some View {
         VStack(spacing: 14) {
             HStack {
                 Label("Recording", systemImage: "record.circle").font(.headline.weight(.bold))
                 Spacer()
-                Text(formattedTime(vm.recordingTime))
-                    .font(.system(.subheadline, design: .monospaced, weight: .bold))
-                    .foregroundStyle(Color(hex: "#ec4899"))
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Color(hex: "#ec4899").opacity(0.12))
-                    .clipShape(Capsule())
+                // ── Blinking REC badge + monospaced timer ──
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color(hex: "#ef4444"))
+                        .frame(width: 7, height: 7)
+                        .opacity(recBlink ? 1 : 0.2)
+                        .animation(
+                            .easeInOut(duration: 0.75).repeatForever(autoreverses: true),
+                            value: recBlink
+                        )
+                    Text(formattedTime(vm.recordingTime))
+                        .font(.system(.subheadline, design: .monospaced, weight: .bold))
+                        .foregroundStyle(Color(hex: "#ec4899"))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Color(hex: "#ec4899").opacity(0.10))
+                .overlay(
+                    Capsule().stroke(Color(hex: "#ec4899").opacity(0.30), lineWidth: 1)
+                )
+                .clipShape(Capsule())
             }
+            .onAppear { recBlink = true }
 
             HStack(spacing: 10) {
                 Button { showEventSheet = true } label: {
