@@ -37,6 +37,13 @@ final class SessionViewModel: ObservableObject {
     @Published var rollingRMSSD: [(time: Double, value: Double)] = []
     @Published var dataQuality:  Double         = 100
 
+    // MARK: – Chart display data (decimated, updated every 2 s)
+    @Published var chartRR: [Double] = []
+    @Published var chartTimestamps: [Double] = []
+    @Published var chartRollingRMSSD: [(time: Double, value: Double)] = []
+
+    private var isRefreshing = false
+
     // MARK: – Session state
     @Published var isCalibrating:      Bool   = false
     @Published var calibrationProgress: Double = 0
@@ -214,32 +221,60 @@ final class SessionViewModel: ObservableObject {
     // MARK: – Metrics
 
     private func refreshMetrics() {
-        guard rrIntervals.count >= 2 else { return }
+        guard !isRefreshing, rrIntervals.count >= 2 else { return }
+        isRefreshing = true
 
-        let now   = timestamps.last ?? 0
-        let pairs = zip(rrIntervals, timestamps).filter { $0.1 >= now - 60 }
-        let rec   = pairs.map { $0.0 }
+        // ── Fast metrics on the main thread ──────────────────────────────
+        let now = timestamps.last ?? 0
+        let rec = zip(rrIntervals, timestamps)
+            .filter { $0.1 >= now - 60 }.map { $0.0 }
+        if !rec.isEmpty    { avgRR = engine.calculateMeanRR(rec) }
+        if rec.count >= 2  { rmssd = engine.calculateRMSSD(rec) }
 
-        if !rec.isEmpty { avgRR = engine.calculateMeanRR(rec) }
-        if rec.count >= 2 { rmssd = engine.calculateRMSSD(rec) }
+        // Push decimated snapshot to charts — no layout thrash on every beat
+        updateChartArrays()
 
-        rollingRMSSD = engine.rollingRMSSD(rr: rrIntervals, times: timestamps)
-
+        // ── Heavy work off the main thread ───────────────────────────────
         let rrSnap = rrIntervals
         let tsSnap = timestamps
         Task.detached(priority: .utility) { [weak self] in
-            guard let self = self else { return }
-            let psd = await self.engine.calculatePSD(rr: rrSnap, times: tsSnap)
-            let sri = await self.engine.calculateSRI(rr: rrSnap, times: tsSnap, psdResult: psd)
+            guard let self else { return }
+            let psd     = await self.engine.calculatePSD(rr: rrSnap, times: tsSnap)
+            let sri     = await self.engine.calculateSRI(rr: rrSnap, times: tsSnap,
+                                                         psdResult: psd)
+            let rolling = await self.engine.rollingRMSSD(rr: rrSnap, times: tsSnap)
             await MainActor.run {
-                self.psdResult = psd
+                self.psdResult           = psd
+                self.rollingRMSSD        = rolling
+                self.chartRollingRMSSD   = rolling
                 if let s = sri {
                     self.sriScore      = s.score
                     self.sriComponents = s.components
                     if s.peakHR > self.peakHR { self.peakHR = s.peakHR }
                 }
+                self.isRefreshing = false
             }
         }
+    }
+
+    /// Keeps chart arrays ≤ maxPoints so SwiftUI Charts never iterates the full buffer.
+    private func updateChartArrays(maxPoints: Int = 350) {
+        let count = rrIntervals.count
+        guard count > 0 else { return }
+        if count <= maxPoints {
+            chartRR = rrIntervals
+            chartTimestamps = timestamps
+            return
+        }
+        let step = count / maxPoints
+        var decimatedRR  = [Double](); decimatedRR.reserveCapacity(maxPoints + 1)
+        var decimatedTS  = [Double](); decimatedTS.reserveCapacity(maxPoints + 1)
+        var i = 0
+        while i < count { decimatedRR.append(rrIntervals[i]); decimatedTS.append(timestamps[i]); i += step }
+        // Always keep the last real point so live charts feel current
+        if let l = rrIntervals.last, let t = timestamps.last { decimatedRR.append(l); decimatedTS.append(t) }
+        chartRR = decimatedRR
+        chartTimestamps = decimatedTS
     }
 
     // MARK: – Public commands
@@ -374,6 +409,8 @@ final class SessionViewModel: ObservableObject {
             hrRecovery: session.sriComponentHRRecovery
         )
         rollingRMSSD = engine.rollingRMSSD(rr: rrIntervals, times: timestamps)
+        updateChartArrays()
+        chartRollingRMSSD = rollingRMSSD
         dataQuality = session.dataQuality
         currentSession = session
 
@@ -398,6 +435,8 @@ final class SessionViewModel: ObservableObject {
         lastValidRR = nil; calibrationStartWall = nil
         dataQuality = 100; recordingTime = 0
         currentSession = nil
+        chartRR = []; chartTimestamps = []; chartRollingRMSSD = []
+        isRefreshing = false
     }
 
     var hrZone: HRZone { HRZone.forHR(heartRate) }
