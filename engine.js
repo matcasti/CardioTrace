@@ -781,8 +781,10 @@ function formatDate(dateString) {
 }
 
 // Auto-save session
+let _autoSaveInProgress = false;
 async function autoSaveSession() {
-    if (!isConnected || rrIntervals.length === 0) return;
+    if (!isConnected || rrIntervals.length === 0 || _autoSaveInProgress) return;
+    _autoSaveInProgress = true;
 
     try {
         const currentTime = calibrationStartTime
@@ -831,6 +833,8 @@ async function autoSaveSession() {
         await updateHistoryBadge();
     } catch (error) {
         console.error('Auto-save failed:', error);
+    } finally {
+        _autoSaveInProgress = false;
     }
 }
 
@@ -862,13 +866,12 @@ async function updateHistoryBadge() {
             if (s.tags) s.tags.forEach(tag => allTags.add(tag));
         });
 
-        tagFilter.innerHTML = '<option value="">All Tags</option>';
-        Array.from(allTags).sort().forEach(tag => {
-            const option = document.createElement('option');
-            option.value = tag;
-            option.textContent = tag;
-            tagFilter.appendChild(option);
-        });
+        const tagOptions = '<option value="">All Tags</option>' +
+            Array.from(allTags).sort().map(tag =>
+                `<option value="${tag}">${tag}</option>`
+            ).join('');
+        tagFilter.innerHTML = tagOptions;
+        historyTableTagFilter.innerHTML = tagOptions;
     } catch (error) {
         console.error('Failed to update history badge:', error);
     }
@@ -1084,9 +1087,6 @@ async function renderHistoryTable() {
                 }
             });
         });
-        historyTableSearch.addEventListener('input', renderHistoryTable);
-        historyTableTagFilter.addEventListener('change', renderHistoryTable);
-        historyTableSortFilter.addEventListener('change', renderHistoryTable);
     } catch (error) {
         console.error('Failed to render history table:', error);
     }
@@ -1097,7 +1097,7 @@ async function restoreSession(id) {
         const session = await loadSession(id);
         if (isConnected) {
             if (!confirm('Disconnect current session and load this one?')) return;
-            disconnect();
+            disconnect(true); // suppress redundant confirm
         }
 
         // Restore data arrays
@@ -1212,10 +1212,9 @@ async function downloadSession(id) {
 }
 
 // Bulk download all filtered sessions
-// REPLACE the existing bulkDownloadSessions function:
-async function bulkDownloadSessions() {
+async function bulkDownloadSessions(filterOverrides = {}) {
     const sessions = await loadSessions();
-    const filtered = filterAndSortSessions(sessions);
+    const filtered = filterAndSortSessions(sessions, filterOverrides);
     if (filtered.length === 0) { alert('No sessions to download.'); return; }
 
     const format = bulkFormatSelect.value;
@@ -1498,6 +1497,9 @@ bulkDownloadBtn.addEventListener('click', bulkDownloadSessions);
 historySearch.addEventListener('input', renderHistory);
 tagFilter.addEventListener('change', renderHistory);
 sortFilter.addEventListener('change', renderHistory);
+historyTableSearch.addEventListener('input', renderHistoryTable);
+historyTableTagFilter.addEventListener('change', renderHistoryTable);
+historyTableSortFilter.addEventListener('change', renderHistoryTable);
 
 // View toggle tabs
 tabCards.addEventListener('click', () => {
@@ -1512,6 +1514,8 @@ tabTable.addEventListener('click', () => {
     tabCards.classList.remove('active');
     tabTable.classList.add('active');
     historyContent.style.display = 'none';
+    historyPanel.classList.remove('active');
+    historyOverlay.classList.remove('active');
     openHistoryTable();
 });
 
@@ -1532,6 +1536,9 @@ function closeHistoryTable() {
     tabCards.classList.add('active');
     tabTable.classList.remove('active');
     historyContent.style.display = '';
+    historyPanel.classList.add('active');    // reopen sidebar
+    historyOverlay.classList.add('active');
+    renderHistory();                         // refresh card view
 }
 
 historyTableClose.addEventListener('click', closeHistoryTable);
@@ -1545,7 +1552,11 @@ historyTableBulkDownloadBtn.addEventListener('click', async () => {
     historyTableBulkDownloadBtn.disabled = true;
     historyTableBulkDownloadBtn.textContent = '⏳ Preparing...';
     try {
-        await bulkDownloadSessions();
+        await bulkDownloadSessions({
+            search: historyTableSearch.value,
+            tag:    historyTableTagFilter.value,
+            sort:   historyTableSortFilter.value,
+        });
     } finally {
         historyTableBulkDownloadBtn.disabled = false;
         historyTableBulkDownloadBtn.textContent = '⬇ Download';
@@ -1766,8 +1777,8 @@ async function connect() {
 }
 
 // Disconnect
-function disconnect() {
-    if (confirm('Disconnect device? Data will be saved to history.')) {
+function disconnect(skipConfirm = false) {
+    if (skipConfirm || confirm('Disconnect device? Data will be saved to history.')) {
         stopAutoSave();
         if (device && device.gatt.connected) {
             if (rrIntervals.length > 0) {
@@ -1945,13 +1956,12 @@ function handleHRData(event) {
     lastPacketTime = Date.now();
 
     const rrPresent = flags & 0x10;
-    // Find this section in handleHRData():
     if (rrPresent) {
-        let offset = hrFormat === 0 ? 2 : 3;
-        while (offset < value.byteLength) {
+      let offset = hrFormat === 0 ? 2 : 3;
+      if (flags & 0x08) offset += 2; // skip Energy Expended field if present
+      while (offset < value.byteLength) {
             const rr = value.getUint16(offset, true) / 1024 * 1000;
 
-            // REPLACE the entire block with:
             // Only process and store data AFTER calibration completes
             if (!isCalibrating && calibrationStartTime) {
                 const timestamp = (Date.now() - calibrationStartTime) / 1000;
@@ -1973,12 +1983,12 @@ function handleHRData(event) {
 
         // Update stats and charts only after calibration
         if (!isCalibrating && calibrationStartTime) {
+            if (shouldUpdateChart('psd')) updatePSDChart(); // must precede updateStats/SRI
             updateStats();
             flashStatCards();
             if (shouldUpdateChart('rr')) updateRRChart();
             if (shouldUpdateChart('rmssd')) updateRollingRMSSD();
             if (shouldUpdateChart('poincare')) updatePoincareChart();
-            if (shouldUpdateChart('psd')) updatePSDChart();
         }
     }
 }
@@ -2481,9 +2491,7 @@ function closeSRIInfo() {
 
 sriInfoBtn.addEventListener('click', openSRIInfo);
 sriInfoClose.addEventListener('click', closeSRIInfo);
-sriInfoClose.addEventListener('touchstart', closeSRIInfo);
 sriInfoOverlay.addEventListener('click', closeSRIInfo);
-sriInfoOverlay.addEventListener('touchstart', closeSRIInfo);
 
 // Update stats
 function updateStats() {
@@ -2588,33 +2596,30 @@ function updateRollingRMSSD() {
     rollingRMSSD = [];
     rollingRMSSDTimes = [];
 
-    for (let i = 0; i < rrIntervals.length; i++) {
+    let left = 0;
+    let sumSqDiff = 0;
+    let pairCount = 0;
+
+    for (let i = 1; i < rrIntervals.length; i++) {
+        // Incrementally add the newest pair
+        const newDiff = rrIntervals[i] - rrIntervals[i - 1];
+        sumSqDiff += newDiff * newDiff;
+        pairCount++;
+
         const currentTime = timestamps[i];
-
-        // Only start calculating after 30 seconds
-        if (currentTime < 30) continue;
-
         const windowStart = currentTime - windowDuration;
-        const windowIndices = [];
 
-        for (let j = 0; j <= i; j++) {
-            if (timestamps[j] >= windowStart) windowIndices.push(j);
+        // Evict pairs whose left index has fallen outside the window
+        while (left < i && timestamps[left] < windowStart) {
+            const evictDiff = rrIntervals[left + 1] - rrIntervals[left];
+            sumSqDiff -= evictDiff * evictDiff;
+            pairCount--;
+            left++;
         }
 
-        if (windowIndices.length >= 2) {
-            let sumSquaredDiff = 0;
-            let count = 0;
-            for (let k = 1; k < windowIndices.length; k++) {
-                const idx1 = windowIndices[k - 1];
-                const idx2 = windowIndices[k];
-                const diff = rrIntervals[idx2] - rrIntervals[idx1];
-                sumSquaredDiff += diff * diff;
-                count++;
-            }
-            if (count > 0) {
-                rollingRMSSD.push(Math.sqrt(sumSquaredDiff / count));
-                rollingRMSSDTimes.push(currentTime);
-            }
+        if (currentTime >= 30 && pairCount > 0) {
+            rollingRMSSD.push(Math.sqrt(sumSqDiff / pairCount));
+            rollingRMSSDTimes.push(currentTime);
         }
     }
 
