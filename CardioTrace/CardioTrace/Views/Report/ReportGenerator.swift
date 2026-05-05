@@ -440,7 +440,7 @@ private final class PDFBuilder {
             ], startY: y)
         } else {
             text("Insufficient data — 50 or more RR intervals required.",
-                 x: margin + 8, y: y,
+                 x: margin + 8, y: y, width: cw - 16,
                  font: .italicSystemFont(ofSize: 9), color: subtle)
             y += 16
         }
