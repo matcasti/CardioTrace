@@ -39,6 +39,7 @@ let timerInterval = null;
 let autoSaveInterval = null;
 let currentSessionId = null;
 let lastPSDResult = null; // Store last PSD calculation for reuse
+let dataQuality = 100;
 let selectedEventType = 'Note';
 let currentHR = 0;
 let lastPacketTime = Date.now();
@@ -312,7 +313,7 @@ function cleanRRData(rrIntervals, timestamps) {
 // Calculate data quality percentage
 function calculateDataQuality(originalLength, cleanedLength) {
     if (originalLength === 0) return 100;
-    return ((cleanedLength / originalLength) * 100).toFixed(1);
+    return parseFloat(((cleanedLength / originalLength) * 100).toFixed(1));
 }
 
 // Lomb-Scargle periodogram implementation
@@ -320,9 +321,10 @@ function lombScarglePeriodogram(times, values, frequencies) {
     const n = times.length;
     if (n < 2 || frequencies.length < 2) return frequencies.map(() => 0);
 
-    // --- 1) Demean values (important)
-    const mean = values.reduce((s, v) => s + v, 0) / n;
-    const y = values.map(v => v - mean); // y in ms
+    // --- 1) Demean values
+
+    // values are expected to already be demeaned by the caller
+    const y = values;
 
     const rawPower = [];
 
@@ -873,10 +875,10 @@ async function updateHistoryBadge() {
 }
 
 // Filter and sort sessions
-function filterAndSortSessions(sessions) {
-    const searchTerm = historySearch.value.toLowerCase();
-    const selectedTag = tagFilter.value;
-    const sortBy = sortFilter.value;
+function filterAndSortSessions(sessions, overrides = {}) {
+    const searchTerm = (overrides.search ?? historySearch.value).toLowerCase();
+    const selectedTag = overrides.tag ?? tagFilter.value;
+    const sortBy = overrides.sort ?? sortFilter.value;
 
     let filtered = sessions.filter(session => {
         const matchesSearch = !searchTerm ||
@@ -1001,10 +1003,14 @@ async function renderHistory() {
 async function renderHistoryTable() {
     try {
         const sessions = await loadSessions();
+        const filtered = filterAndSortSessions(sessions, {
+            search: historyTableSearch.value,
+            tag:    historyTableTagFilter.value,
+            sort:   historyTableSortFilter.value,
+        });
         const tableSearch   = historyTableSearch?.value   ?? historySearch.value;
         const tableTagVal   = historyTableTagFilter?.value ?? tagFilter.value;
         const tableSortVal  = historyTableSortFilter?.value ?? sortFilter.value;
-        const filtered = filterAndSortSessions(sessions);
 
         if (filtered.length === 0) {
             historyTableBody.innerHTML = `
@@ -1078,7 +1084,9 @@ async function renderHistoryTable() {
                 }
             });
         });
-
+        historyTableSearch.addEventListener('input', renderHistoryTable);
+        historyTableTagFilter.addEventListener('change', renderHistoryTable);
+        historyTableSortFilter.addEventListener('change', renderHistoryTable);
     } catch (error) {
         console.error('Failed to render history table:', error);
     }
@@ -1179,6 +1187,8 @@ async function downloadSession(id) {
             rrCount: session.rrIntervals.length,
             rawRRCount: session.rawRRIntervals?.length || session.rrIntervals.length,
             eventCount: session.eventMarkers?.length || 0,
+            sessionTimestamps: session.timestamps,
+            sessionEventMarkers: session.eventMarkers || [],
             includeRaw: false // Downloaded sessions are always cleaned data
         });
 
@@ -1529,13 +1539,18 @@ historyTableOverlay.addEventListener('click', closeHistoryTable);
 
 // Wire the in-modal bulk download to use its own format select
 historyTableBulkDownloadBtn.addEventListener('click', async () => {
-    // Temporarily point bulkFormatSelect.value to modal's select, then restore
     const savedFormat = bulkFormatSelect.value;
     bulkFormatSelect.value = historyTableFormatSelect.value;
-    const savedBtn = bulkDownloadBtn;
-    // Reuse existing bulkDownloadSessions, swapping button reference temporarily
-    await bulkDownloadSessions();
-    bulkFormatSelect.value = savedFormat;
+
+    historyTableBulkDownloadBtn.disabled = true;
+    historyTableBulkDownloadBtn.textContent = '⏳ Preparing...';
+    try {
+        await bulkDownloadSessions();
+    } finally {
+        historyTableBulkDownloadBtn.disabled = false;
+        historyTableBulkDownloadBtn.textContent = '⬇ Download';
+        bulkFormatSelect.value = savedFormat;
+    }
 });
 
 tagInput.addEventListener('keypress', (e) => {
@@ -1588,6 +1603,7 @@ async function performSessionReset(showConfirm = true) {
     rawTimestamps = [];
     eventMarkers = [];
     sessionAnnotations = [];
+    sessionTags = [];
     rollingRMSSD = [];
     rollingRMSSDTimes = [];
     ecgData = [];
@@ -1649,18 +1665,22 @@ async function performSessionReset(showConfirm = true) {
 // Connect to device
 async function connect() {
     try {
-        // Reset session if data exists
-        if (rrIntervals.length > 0) {
-            if (!confirm('Starting a new session will clear current data. Continue?')) return;
-            await performSessionReset(false); // false = don't prompt again
-            sessionTags = [];
-        }
-
         status.textContent = 'Scanning...';
         device = await navigator.bluetooth.requestDevice({
             filters: [{ services: [HR_SERVICE] }],
             optionalServices: [PMD_SERVICE, BATTERY_SERVICE]
         });
+
+        // Only now ask to clear and reset
+        if (rrIntervals.length > 0) {
+            if (!confirm('Starting a new session will clear current data. Continue?')) {
+                device = null;
+                status.textContent = 'Not Connected';
+                return;
+            }
+            await performSessionReset(false);
+            sessionTags = [];
+        }
 
         status.textContent = 'Connecting...';
         server = await device.gatt.connect();
@@ -2084,9 +2104,9 @@ function calculateSRI(rrData = null, timeData = null) {
 
     // Component 3: HR Recovery Rate (30% weight)
     const hrValues = analysisRR.map(rr => 60000 / rr);
-    const peakHRLocal = Math.max(...hrValues);
+    const peakHRLocal = hrValues.reduce((a, b) => Math.max(a, b), 0);
     const avgHR = hrValues.reduce((a, b) => a + b, 0) / hrValues.length;
-    const minHR = Math.min(...hrValues);
+    const minHR = hrValues.reduce((a, b) => Math.min(a, b), Infinity);
 
     const recoveryRate1 = peakHRLocal > 0 ? ((peakHRLocal - avgHR) / peakHRLocal) * 100 : 0;
     const recoveryRate2 = peakHRLocal > 0 ? ((peakHRLocal - minHR) / peakHRLocal) * 100 : 0;
@@ -2476,7 +2496,9 @@ function updateStats() {
         dataQuality = 100; // No raw data yet, assume 100%
     }
 
-    const currentTime = (Date.now() - sessionStartTime) / 1000;
+    const currentTime = timestamps.length > 0
+        ? timestamps[timestamps.length - 1]
+        : (calibrationStartTime ? (Date.now() - calibrationStartTime) / 1000 : 0);
     const oneMinAgo = currentTime - 60;
     const recentRR = rrIntervals.filter((_, i) => timestamps[i] >= oneMinAgo);
 
@@ -2666,9 +2688,12 @@ function generateMetadataHeader(sessionData) {
     const sessionDate = new Date(startTime);
     const dateStr = sessionDate.toISOString().slice(0, 19).replace('T', ' ');
 
+    const srcTimestamps = sessionData.sessionTimestamps || timestamps;
+    const srcEventMarkers = sessionData.sessionEventMarkers || eventMarkers;
+
     // Calculate actual duration from timestamps
-    const actualDuration = timestamps.length > 0
-        ? Math.floor(timestamps[timestamps.length - 1])
+    const actualDuration = srcTimestamps.length > 0
+        ? Math.floor(srcTimestamps[srcTimestamps.length - 1])
         : 0;
 
     // Calculate data quality metrics
@@ -2695,7 +2720,7 @@ function generateMetadataHeader(sessionData) {
     header += `# Events\n`;
     header += `# Total Events: ${eventCount}\n`;
     if (eventCount > 0) {
-        header += `# Event Types: ${[...new Set(eventMarkers.map(e => e.type))].join(', ')}\n`;
+        header += `# Event Types: ${[...new Set(srcEventMarkers.map(e => e.type))].join(', ')}\n`;
     }
     header += `#\n`;
 
