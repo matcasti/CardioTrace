@@ -238,10 +238,10 @@ final class SessionViewModel: ObservableObject {
             let hr = 60000 / rr
             if hr > peakHR { peakHR = hr }
 
-            // Refresh chart data and cheap 1-min metrics on every valid beat
-            updateChartArrays()
+            // Cheap 1-min stats — fine to compute on every beat
+            let now = t
             let rec = zip(rrIntervals, timestamps)
-                .filter { $0.1 >= t - 60 }.map { $0.0 }
+                .filter { $0.1 >= now - 60 }.map { $0.0 }
             if !rec.isEmpty   { avgRR = engine.calculateMeanRR(rec) }
             if rec.count >= 2 { rmssd = engine.calculateRMSSD(rec) }
         }
@@ -298,6 +298,7 @@ final class SessionViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
+                self.updateChartArrays()          // batch chart update every 2 s
                 self.psdResult         = psd
                 self.rollingRMSSD      = rolling
                 self.chartRollingRMSSD = rolling

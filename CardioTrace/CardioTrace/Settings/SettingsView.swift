@@ -98,7 +98,7 @@ struct SettingsView: View {
                     Button("Replay Onboarding") { showResetConfirm = true }
                         .foregroundStyle(Color(hex: "#6366f1"))
                     Link("ESC HRV Standards (1996)",
-                         destination: URL(string: "https://doi.org/10.1161/01.CIR.93.5.1043")!)
+                         destination: URL(string: "https://doi.org/10.1161/01.CIR.93.5.1043/")!)
                     Link("Polar H10 Setup Guide",
                          destination: URL(string: "https://www.polar.com/en/sensors/h10-heart-rate-sensor")!)
                 } header: { Text("About") }

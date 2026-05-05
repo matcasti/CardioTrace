@@ -9,28 +9,33 @@ struct SRIGaugeView: View {
     private let timer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        ZStack {
-            Canvas { ctx, size in
-                drawGauge(ctx: ctx, size: size, score: score, pulse: pulsePhase)
-            }
-            .aspectRatio(1, contentMode: .fit)
-            .onReceive(timer) { _ in
-                withAnimation(.linear(duration: 0.05)) {
-                    pulsePhase = pulsePhase + 0.05
+        GeometryReader { proxy in
+            let side = min(proxy.size.width, proxy.size.height)
+            ZStack {
+                Canvas { ctx, size in
+                    drawGauge(ctx: ctx, size: size, score: score, pulse: pulsePhase)
+                }
+
+                VStack(spacing: 2) {
+                    Text(score > 0 ? "\(score)" : "--")
+                        .font(.system(size: side * 0.24, weight: .black, design: .rounded))
+                        .foregroundStyle(scoreGradient)
+                        .contentTransition(.numericText())
+                        .animation(.spring(duration: 0.6), value: score)
+
+                    Text("SRI SCORE")
+                        .font(.system(size: max(8, side * 0.075), weight: .bold))
+                        .kerning(1.5)
+                        .foregroundStyle(.secondary)
                 }
             }
-
-            VStack(spacing: 2) {
-                Text(score > 0 ? "\(score)" : "--")
-                    .font(.system(size: 52, weight: .black, design: .rounded))
-                    .foregroundStyle(scoreGradient)
-                    .contentTransition(.numericText())
-                    .animation(.spring(duration: 0.6), value: score)
-
-                Text("SRI SCORE")
-                    .font(.system(size: 11, weight: .bold))
-                    .kerning(1.5)
-                    .foregroundStyle(.secondary)
+            .frame(width: side, height: side)
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .onReceive(timer) { _ in
+            withAnimation(.linear(duration: 0.05)) {
+                pulsePhase += 0.05
             }
         }
     }

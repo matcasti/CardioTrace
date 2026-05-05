@@ -141,12 +141,21 @@ final class BluetoothManager: NSObject, ObservableObject {
 
     private func monitorSignal() {
         signalTimer?.invalidate()
-        signalTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let dt = -self.lastPacketTime.timeIntervalSinceNow
-            let q: SignalQuality = dt > 5 ? .poor : dt > 3 ? .fair : dt > 1.5 ? .good : .excellent
-            DispatchQueue.main.async { self.signalQuality = q }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.signalTimer = Timer.scheduledTimer(timeInterval: 1,
+                                                    target: self,
+                                                    selector: #selector(self.updateSignal),
+                                                    userInfo: nil,
+                                                    repeats: true)
+            RunLoop.main.add(self.signalTimer!, forMode: .common)
         }
+    }
+
+    @objc private func updateSignal() {
+        let dt = -lastPacketTime.timeIntervalSinceNow
+        let q: SignalQuality = dt > 5 ? .poor : dt > 3 ? .fair : dt > 1.5 ? .good : .excellent
+        signalQuality = q   // already on main thread
     }
 
     // MARK: – HR parsing (identical logic to engine.js handleHRData)

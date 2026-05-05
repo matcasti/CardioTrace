@@ -83,11 +83,15 @@ struct ConnectionCard: View {
                 if vm.isConnected { SignalBadge(quality: vm.signalQuality) }
             }
 
-            HStack(spacing: 10) {
-                ConnectionStatusBadge(state: vm.connectionState)
-                if vm.batteryLevel > 0 { BatteryView(level: vm.batteryLevel) }
-                if vm.isConnected      { HRZoneBadge(zone: vm.hrZone) }
-                Spacer()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ConnectionStatusBadge(state: vm.connectionState)
+                    if vm.batteryLevel > 0 { BatteryView(level: vm.batteryLevel) }
+                    // HR zone is only meaningful once actual data is flowing
+                    if case .connected = vm.connectionState {
+                        HRZoneBadge(zone: vm.hrZone)
+                    }
+                }
             }
 
             HStack(spacing: 10) {
