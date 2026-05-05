@@ -20,8 +20,14 @@ struct ContentView: View {
             ChartsView()
                 .tabItem { Label("Charts", systemImage: "waveform.path.ecg") }
 
+            TrendsView()                                              // ADD
+                .tabItem { Label("Trends", systemImage: "chart.line.uptrend.xyaxis") }   // ADD
+
             HistoryView()
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
+
+            SettingsView()                                            // ADD
+                .tabItem { Label("Settings", systemImage: "gearshape") }  // ADD
         }
         .tint(Color(hex: "#6366f1"))
         .onAppear { vm.modelContext = modelContext }

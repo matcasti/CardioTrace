@@ -68,7 +68,8 @@ final class SessionViewModel: ObservableObject {
     private var calibrationStartWall: Date?   // wall-clock when calibration ended
     private var lastValidRR: Double?
 
-    private let CALIBRATION_SECS = 8.0
+    @AppStorage("calibrationDuration") private var calibrationDurationSetting = 8
+    private var CALIBRATION_SECS: Double { Double(calibrationDurationSetting) }
     private let ECG_BUFFER       = 650
 
     private var calibTimer:    Timer?
@@ -529,5 +530,6 @@ final class SessionViewModel: ObservableObject {
         metricsTask = nil
     }
 
-    var hrZone: HRZone { HRZone.forHR(heartRate) }
+    @AppStorage("userAge") private var userAge = 30
+    var hrZone: HRZone { HRZone.forHR(heartRate, age: userAge) }
 }

@@ -4,6 +4,7 @@ import Charts
 // MARK: – Chart host
 struct ChartsView: View {
     @EnvironmentObject var vm: SessionViewModel
+    @AppStorage("researchMode") private var researchMode = false
 
     /// When recording show a 90-second sliding window; otherwise show all.
     private var xDomain: ClosedRange<Double>? {
@@ -36,7 +37,25 @@ struct ChartsView: View {
                     if vm.chartRR.count < 2 {
                         PlaceholderOverlay(icon: "📊", text: "Need more data")
                     } else {
-                        PoincareChart(rr: vm.chartRR)
+                        PoincareChart(rr: vm.chartRR, researchMode: researchMode)
+                    }
+                }
+                ChartCard(title: "RR Interval Distribution", icon: "chart.bar") {
+                    if vm.chartRR.count < 20 {
+                        PlaceholderOverlay(icon: "📊", text: "Need at least 20 RR intervals")
+                    } else {
+                        RRHistogramChart(rr: vm.chartRR)
+                    }
+                }
+                if researchMode {
+                    ChartCard(title: "Vagal Proxy (RMSSD/SDNN)", icon: "waveform.and.magnifyingglass") {
+                        let proxy = HRVEngine.shared.rollingVagalProxy(
+                            rr: vm.rrIntervals, times: vm.timestamps)
+                        if proxy.isEmpty {
+                            PlaceholderOverlay(icon: "⏱️", text: "Available after 2 minutes")
+                        } else {
+                            VagalProxyChart(data: proxy, markers: vm.eventMarkers)
+                        }
                     }
                 }
                 ChartCard(title: "Power Spectral Density", icon: "waveform") {
@@ -203,26 +222,81 @@ struct RollingRMSSDChart: View {
 // MARK: – Poincaré
 struct PoincareChart: View {
     let rr: [Double]
+    var researchMode: Bool = false
+
+    private var engine: HRVEngine { .shared }
+    private var sd1: Double { engine.calculateSD1(rr) }
+    private var sd2: Double { engine.calculateSD2(rr) }
+
     struct Pt: Identifiable { var id = UUID(); var x, y: Double }
     private var points: [Pt] {
         guard rr.count >= 2 else { return [] }
         return (0..<rr.count - 1).map { Pt(x: rr[$0], y: rr[$0 + 1]) }
     }
+    private var identityBounds: (Double, Double) {
+        let lo = (rr.min() ?? 400) - 30
+        let hi = (rr.max() ?? 900) + 30
+        return (lo, hi)
+    }
+
     var body: some View {
-        Chart {
-            ForEach(points) { pt in
-                PointMark(x: .value("RR(n)", pt.x), y: .value("RR(n+1)", pt.y))
-                    .foregroundStyle(
-                        LinearGradient(colors: [Color(hex: "#a78bfa"), Color(hex: "#6366f1")],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-                    .symbolSize(18)
+        VStack(spacing: 8) {
+            Chart {
+                // Identity line (y = x)
+                let (lo, hi) = identityBounds
+                ForEach([lo, hi], id: \.self) { v in
+                    LineMark(x: .value("x", v), y: .value("y", v))
+                        .foregroundStyle(Color.secondary.opacity(0.30))
+                        .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [5, 5]))
+                }
+                // Scatter
+                ForEach(points) { pt in
+                    PointMark(x: .value("RR(n)", pt.x), y: .value("RR(n+1)", pt.y))
+                        .foregroundStyle(
+                            LinearGradient(colors: [Color(hex: "#a78bfa"), Color(hex: "#6366f1")],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                        )
+                        .symbolSize(16)
+                }
+            }
+            .chartXAxisLabel("RR(n) ms")
+            .chartYAxisLabel("RR(n+1) ms")
+            .chartXAxis { AxisMarks(stroke: StrokeStyle(lineWidth: 0.4)) }
+            .chartYAxis { AxisMarks(stroke: StrokeStyle(lineWidth: 0.4)) }
+
+            // SD1 / SD2 metric pills
+            if sd1 > 0 {
+                HStack(spacing: 0) {
+                    PoincareStat(label: "SD1", value: String(format: "%.1f ms", sd1),
+                                 subtitle: "Short-term vagal", color: "#ec4899")
+                    PoincareStat(label: "SD2", value: String(format: "%.1f ms", sd2),
+                                 subtitle: "Overall autonomic", color: "#6366f1")
+                    if researchMode {
+                        PoincareStat(label: "SD1/SD2",
+                                     value: String(format: "%.2f", sd2 > 0 ? sd1 / sd2 : 0),
+                                     subtitle: "Vagal index", color: "#22d3ee")
+                    }
+                }
             }
         }
-        .chartXAxisLabel("RR(n) ms")
-        .chartYAxisLabel("RR(n+1) ms")
-        .chartXAxis { AxisMarks(stroke: StrokeStyle(lineWidth: 0.4)) }
-        .chartYAxis { AxisMarks(stroke: StrokeStyle(lineWidth: 0.4)) }
+    }
+}
+
+private struct PoincareStat: View {
+    let label: String; let value: String; let subtitle: String; let color: String
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(label).font(.system(size: 9, weight: .semibold))
+                .textCase(.uppercase).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(Color(hex: color))
+            Text(subtitle).font(.system(size: 9)).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .background(Color(hex: color).opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 3)
     }
 }
 
@@ -279,6 +353,86 @@ struct PSDChart: View {
             Text("\(l) (\(String(format: "%.0f", pct))%)")
                 .font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(hex: hex))
         }
+    }
+}
+
+// MARK: – RR Interval Histogram
+struct RRHistogramChart: View {
+    let rr: [Double]
+    private var bins: [(center: Double, count: Int)] { HRVEngine.shared.rrHistogram(rr) }
+    private var meanRR: Double { rr.reduce(0, +) / Double(rr.count) }
+
+    var body: some View {
+        Chart {
+            ForEach(bins, id: \.center) { bin in
+                BarMark(x: .value("RR (ms)", bin.center),
+                        y: .value("Count", bin.count),
+                        width: .fixed(7))
+                    .foregroundStyle(
+                        LinearGradient(colors: [Color(hex: "#6366f1"), Color(hex: "#a78bfa")],
+                                       startPoint: .bottom, endPoint: .top)
+                    )
+                    .cornerRadius(2)
+            }
+            // Mean reference line
+            RuleMark(x: .value("Mean", meanRR))
+                .foregroundStyle(Color(hex: "#22d3ee").opacity(0.8))
+                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                .annotation(position: .top, alignment: .leading) {
+                    Text(String(format: "%.0f ms", meanRR))
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color(hex: "#22d3ee"))
+                }
+        }
+        .chartXAxisLabel("RR Interval (ms)")
+        .chartYAxisLabel("Count")
+        .chartXAxis { AxisMarks(stroke: StrokeStyle(lineWidth: 0.4)) }
+        .chartYAxis { AxisMarks(stroke: StrokeStyle(lineWidth: 0.4)) }
+    }
+}
+
+// MARK: – Vagal Proxy Chart (research mode)
+struct VagalProxyChart: View {
+    let data: [(time: Double, ratio: Double)]
+    let markers: [EventMarker]
+
+    var body: some View {
+        Chart {
+            // Balanced zone (RMSSD/SDNN 0.5–0.85)
+            RectangleMark(yStart: .value("", 0.50), yEnd: .value("", 0.85))
+                .foregroundStyle(Color(hex: "#10b981").opacity(0.08))
+
+            ForEach(Array(data.enumerated()), id: \.offset) { _, pt in
+                AreaMark(x: .value("s", pt.time), y: .value("ratio", pt.ratio))
+                    .foregroundStyle(LinearGradient(
+                        colors: [Color(hex: "#a78bfa").opacity(0.28), .clear],
+                        startPoint: .top, endPoint: .bottom))
+                    .interpolationMethod(.catmullRom)
+                LineMark(x: .value("s", pt.time), y: .value("ratio", pt.ratio))
+                    .foregroundStyle(Color(hex: "#a78bfa"))
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .interpolationMethod(.catmullRom)
+            }
+
+            RuleMark(y: .value("Balanced", 0.70))
+                .foregroundStyle(Color(hex: "#10b981").opacity(0.5))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                .annotation(position: .top, alignment: .trailing) {
+                    Text("Balanced (0.70)")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color(hex: "#10b981"))
+                }
+
+            ForEach(markers) { m in
+                RuleMark(x: .value("Event", m.time))
+                    .foregroundStyle(Color(hex: "#22d3ee").opacity(0.6))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+            }
+        }
+        .chartXAxisLabel("Time (s)", alignment: .trailing)
+        .chartYAxisLabel("RMSSD/SDNN")
+        .chartXAxis { AxisMarks(stroke: StrokeStyle(lineWidth: 0.4)) }
+        .chartYAxis { AxisMarks(stroke: StrokeStyle(lineWidth: 0.4)) }
     }
 }
 

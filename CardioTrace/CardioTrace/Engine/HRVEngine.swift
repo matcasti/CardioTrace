@@ -174,6 +174,83 @@ final class HRVEngine {
         return result
     }
 
+    // MARK: – Poincaré-derived metrics
+
+    /// SD1: short-term vagal HRV (scatter perpendicular to identity line)
+    func calculateSD1(_ rr: [Double]) -> Double {
+        guard rr.count > 1 else { return 0 }
+        var sum = 0.0
+        for i in 0..<rr.count - 1 {
+            let d = (rr[i + 1] - rr[i]) / sqrt(2.0)
+            sum += d * d
+        }
+        return sqrt(sum / Double(rr.count - 1))
+    }
+
+    /// SD2: long-term overall HRV (scatter along identity line)
+    func calculateSD2(_ rr: [Double]) -> Double {
+        guard rr.count > 1 else { return 0 }
+        let mean = rr.reduce(0, +) / Double(rr.count)
+        var sum = 0.0
+        for i in 0..<rr.count - 1 {
+            let d = (rr[i] + rr[i + 1] - 2 * mean) / sqrt(2.0)
+            sum += d * d
+        }
+        return sqrt(sum / Double(rr.count - 1))
+    }
+
+    // MARK: – Respiratory rate estimate
+
+    /// Estimates breaths/min from the HF spectral peak (0.15–0.40 Hz).
+    /// Returns nil when the HF band contains insufficient power.
+    func estimateBreathingRate(psd: PSDResult) -> Double? {
+        let hfPairs = zip(psd.frequencies, psd.power)
+            .filter { $0.0 >= 0.15 && $0.0 <= 0.40 }
+        guard let peak = hfPairs.max(by: { $0.1 < $1.1 }), peak.1 > 0 else { return nil }
+        return peak.0 * 60.0   // Hz → breaths/min
+    }
+
+    // MARK: – RR Interval histogram
+
+    /// Returns evenly-spaced bins across the observed RR range.
+    func rrHistogram(_ rr: [Double], bins: Int = 22) -> [(center: Double, count: Int)] {
+        guard rr.count >= 2 else { return [] }
+        let lo = rr.min()!, hi = rr.max()!
+        guard hi > lo else { return [(center: lo, count: rr.count)] }
+        let w = (hi - lo) / Double(bins)
+        var counts = [Int](repeating: 0, count: bins)
+        for v in rr {
+            let idx = min(bins - 1, Int((v - lo) / w))
+            counts[idx] += 1
+        }
+        return counts.enumerated().map { i, c in
+            (center: lo + (Double(i) + 0.5) * w, count: c)
+        }
+    }
+
+    // MARK: – Sympathovagal proxy (RMSSD/SDNN rolling ratio)
+
+    /// Rolling RMSSD/SDNN ratio — a time-domain proxy for parasympathetic dominance.
+    /// Values > 0.7 suggest parasympathetic dominance; < 0.4 sympathetic dominance.
+    func rollingVagalProxy(rr: [Double], times: [Double],
+                           windowSec: Double = 120,
+                           stepSec:   Double = 30) -> [(time: Double, ratio: Double)] {
+        guard rr.count >= 20, let maxT = times.last, maxT >= windowSec else { return [] }
+        var result: [(time: Double, ratio: Double)] = []
+        var t = windowSec
+        while t <= maxT {
+            let wStart = t - windowSec
+            let wRR = zip(times, rr).filter { $0.0 >= wStart && $0.0 <= t }.map { $0.1 }
+            if wRR.count >= 20 {
+                let rmssdV = calculateRMSSD(wRR)
+                let sdnnV  = calculateSDNN(wRR)
+                if sdnnV > 0 { result.append((t, rmssdV / sdnnV)) }
+            }
+            t += stepSec
+        }
+        return result
+    }
+
     // MARK: – Private helpers
 
     private func lombScargle(times: [Double], values: [Double],

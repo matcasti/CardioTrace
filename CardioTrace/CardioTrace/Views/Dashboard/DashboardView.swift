@@ -362,6 +362,27 @@ struct SRISectionView: View {
             }
 
             SRIStatusView(score: vm.sriScore)
+
+            // Breathing rate estimate from HF spectral peak
+            if let psd = vm.psdResult,
+               let br = HRVEngine.shared.estimateBreathingRate(psd: psd) {
+                HStack(spacing: 8) {
+                    Image(systemName: "lungs.fill")
+                        .foregroundStyle(Color(hex: "#22d3ee"))
+                        .font(.subheadline)
+                    Text("Est. respiratory rate")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "%.1f br/min", br))
+                        .font(.system(.callout, design: .rounded, weight: .bold))
+                        .foregroundStyle(Color(hex: "#22d3ee"))
+                        .monospacedDigit()
+                }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(Color(hex: "#22d3ee").opacity(0.07))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
         }
         .padding()
         .background(.ultraThinMaterial)
