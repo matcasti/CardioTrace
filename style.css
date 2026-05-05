@@ -576,6 +576,11 @@ select:focus {
     background: linear-gradient(90deg, var(--danger), #f97316);
 }
 
+.data-quality-excellent { color: var(--success) !important; }
+.data-quality-good      { color: var(--accent-tertiary) !important; }
+.data-quality-fair      { color: var(--warning) !important; }
+.data-quality-poor      { color: var(--danger) !important; }
+
 .recording-timer {
     display: none;
     align-items: center;
@@ -716,6 +721,32 @@ select:focus {
     opacity: 1;
 }
 
+.stat-card.is-live::after {
+    animation: none;
+}
+
+.stat-card.is-live::before {
+    opacity: 1;
+    animation: liveGlow 2s ease-in-out infinite;
+}
+
+@keyframes liveGlow {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+
+.live-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    background: var(--success);
+    border-radius: 50%;
+    margin-left: 6px;
+    vertical-align: middle;
+    animation: pulse 1.5s ease-in-out infinite;
+    box-shadow: 0 0 6px var(--success);
+}
+
 .stat-label {
     font-size: clamp(0.65em, 1.5vw, 0.75em);
     color: var(--text-secondary);
@@ -734,6 +765,11 @@ select:focus {
     background-clip: text;
     letter-spacing: -1px;
     line-height: 1.1;
+    transition: filter 0.4s ease;
+}
+
+.stat-value.value-flash {
+    filter: brightness(1.5) drop-shadow(0 0 3px var(--accent-primary));
 }
 
 .stat-unit {
@@ -2113,7 +2149,7 @@ select:focus {
     color: var(--text-primary);
     border: 1px solid var(--border);
     border-radius: 6px;
-    font-size: clamp(12px, 0.9vw, 15px)
+    font-size: clamp(12px, 0.9vw, 15px);
     cursor: pointer;
 }
 

@@ -1613,6 +1613,7 @@ async function performSessionReset(showConfirm = true) {
     if (dataQualityValue) dataQualityValue.textContent = '--';
 
     // Clear charts
+    document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('is-live'));
     Plotly.update('ecgChart', {x: [[]], y: [[]]}, {}, [0]);
     Plotly.update('rrChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
     Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
@@ -1820,6 +1821,8 @@ function disconnect() {
         avgRRValue.textContent = '--';
         if (dataQualityValue) dataQualityValue.textContent = '--';
 
+        document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('is-live'));
+
         Plotly.update('ecgChart', {x: [[]], y: [[]]}, {}, [0]);
         Plotly.update('rrChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
         Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
@@ -1897,6 +1900,18 @@ function shouldUpdateChart(chartType) {
     return false;
 }
 
+// Pulse stat cards on new data receipt
+function flashStatCards() {
+    document.querySelectorAll('.stat-card').forEach(card => {
+        card.classList.add('is-live');
+        const valueEl = card.querySelector('.stat-value');
+        if (valueEl) {
+            valueEl.classList.add('value-flash');
+            setTimeout(() => valueEl.classList.remove('value-flash'), 200);
+        }
+    });
+}
+
 // Handle HR data
 function handleHRData(event) {
     const value = event.target.value;
@@ -1939,6 +1954,7 @@ function handleHRData(event) {
         // Update stats and charts only after calibration
         if (!isCalibrating && calibrationStartTime) {
             updateStats();
+            flashStatCards();
             if (shouldUpdateChart('rr')) updateRRChart();
             if (shouldUpdateChart('rmssd')) updateRollingRMSSD();
             if (shouldUpdateChart('poincare')) updatePoincareChart();
@@ -2479,7 +2495,14 @@ function updateStats() {
         rmssdValue.textContent = rmssd.toFixed(1);
     }
 
-    if (dataQualityValue) dataQualityValue.textContent = `${dataQuality}%`;
+    if (dataQualityValue) {
+        dataQualityValue.textContent = `${dataQuality}%`;
+        dataQualityValue.className = '';
+        if (dataQuality >= 95) dataQualityValue.classList.add('data-quality-excellent');
+        else if (dataQuality >= 80) dataQualityValue.classList.add('data-quality-good');
+        else if (dataQuality >= 60) dataQualityValue.classList.add('data-quality-fair');
+        else dataQualityValue.classList.add('data-quality-poor');
+    }
 
     updateSRI();
 }
