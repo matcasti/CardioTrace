@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Combine
 import SwiftUI
+import UIKit
 
 @MainActor
 final class SessionViewModel: ObservableObject {
@@ -42,7 +43,9 @@ final class SessionViewModel: ObservableObject {
     @Published var chartTimestamps: [Double] = []
     @Published var chartRollingRMSSD: [(time: Double, value: Double)] = []
 
-    private var isRefreshing = false
+    private var metricsTask:      Task<Void, Never>?          = nil
+    private var backgroundTaskID: UIBackgroundTaskIdentifier  = .invalid
+    private var isInBackground                                = false
 
     // MARK: – Session state
     @Published var isCalibrating:      Bool   = false
@@ -94,10 +97,25 @@ final class SessionViewModel: ObservableObject {
             .assign(to: \.discoveredDevices, on: self)
             .store(in: &cancellables)
 
+        // Removed .receive(on: DispatchQueue.main) — that Combine scheduler
+        // requires the RunLoop to be spinning, which doesn't happen reliably
+        // when backgrounded. Swift Concurrency Tasks are scheduled by the
+        // cooperative thread pool and process even during brief BLE wakeups.
         bt.rrPublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] (rr, _) in self?.handleRR(rr) }
+            .sink { [weak self] (rr, _) in
+                Task { @MainActor [weak self] in self?.handleRR(rr) }
+            }
             .store(in: &cancellables)
+
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.persistSession()
+            }
+        }
 
         bt.ecgPublisher
             .receive(on: DispatchQueue.main)
@@ -198,6 +216,8 @@ final class SessionViewModel: ObservableObject {
         NotificationManager.shared.remove()
         [calibTimer, recTimer, metricsTimer, saveTimer, liveActivityTimer].forEach { $0?.invalidate() }
         calibTimer = nil; recTimer = nil; metricsTimer = nil; saveTimer = nil; liveActivityTimer = nil
+        metricsTask?.cancel()
+        metricsTask = nil
         recordingTime = 0
     }
 
@@ -255,28 +275,36 @@ final class SessionViewModel: ObservableObject {
     // MARK: – Metrics
 
     private func refreshMetrics() {
-        guard !isRefreshing, rrIntervals.count >= 2 else { return }
-        isRefreshing = true
+        // Skip expensive spectral computation while backgrounded; raw RR data
+        // still accumulates via handleRR during brief BLE wakeups.
+        guard !isInBackground, rrIntervals.count >= 2 else { return }
 
-        // ── Heavy work off the main thread ───────────────────────────────
+        // Cancel any in-flight computation — prevents the old isRefreshing
+        // deadlock where a stuck Task kept the flag true forever.
+        metricsTask?.cancel()
+
         let rrSnap = rrIntervals
         let tsSnap = timestamps
-        Task.detached(priority: .utility) { [weak self] in
-            guard let self else { return }
-            let psd     = await self.engine.calculatePSD(rr: rrSnap, times: tsSnap)
-            let sri     = await self.engine.calculateSRI(rr: rrSnap, times: tsSnap,
-                                                         psdResult: psd)
+
+        metricsTask = Task.detached(priority: .utility) { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            let psd = await self.engine.calculatePSD(rr: rrSnap, times: tsSnap)
+            guard !Task.isCancelled else { return }
+            let sri = await self.engine.calculateSRI(rr: rrSnap, times: tsSnap,
+                                                     psdResult: psd)
+            guard !Task.isCancelled else { return }
             let rolling = await self.engine.rollingRMSSD(rr: rrSnap, times: tsSnap)
-            await MainActor.run {
-                self.psdResult           = psd
-                self.rollingRMSSD        = rolling
-                self.chartRollingRMSSD   = rolling
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.psdResult         = psd
+                self.rollingRMSSD      = rolling
+                self.chartRollingRMSSD = rolling
                 if let s = sri {
                     self.sriScore      = s.score
                     self.sriComponents = s.components
                     if s.peakHR > self.peakHR { self.peakHR = s.peakHR }
                 }
-                self.isRefreshing = false
             }
         }
     }
@@ -317,6 +345,42 @@ final class SessionViewModel: ObservableObject {
     func cancelConnect() {
         showDevicePicker = false
         bt.cancelScan()
+    }
+
+    func handleBackground() {
+        isInBackground = true
+        metricsTask?.cancel()   // don't burn CPU on PSD during brief BLE wakeups
+
+        guard isConnected else { return }
+
+        // Request up to 30 s of extra background time so persistSession()
+        // can write to SwiftData before the process is suspended.
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(
+            withName: "CardioTrace.BackgroundSave"
+        ) { [weak self] in
+            // Expiration handler — system is about to suspend; do a final save.
+            self?.persistSession()
+            guard let self, self.backgroundTaskID != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
+            self.backgroundTaskID = .invalid
+        }
+
+        persistSession()
+
+        // Save is synchronous (SwiftData on main actor), so end immediately.
+        if backgroundTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTaskID)
+            backgroundTaskID = .invalid
+        }
+    }
+
+    func handleForeground() {
+        isInBackground = false
+        // End any lingering background task (safety net).
+        if backgroundTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTaskID)
+            backgroundTaskID = .invalid
+        }
     }
 
     func disconnect() {
@@ -461,7 +525,8 @@ final class SessionViewModel: ObservableObject {
         dataQuality = 100; recordingTime = 0
         currentSession = nil
         chartRR = []; chartTimestamps = []; chartRollingRMSSD = []
-        isRefreshing = false
+        metricsTask?.cancel()
+        metricsTask = nil
     }
 
     var hrZone: HRZone { HRZone.forHR(heartRate) }

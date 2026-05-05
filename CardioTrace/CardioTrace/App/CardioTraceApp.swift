@@ -1,16 +1,10 @@
-//
-//  CardioTraceApp.swift
-//  CardioTrace
-//
-//  Created by Matías Castillo Aguilar on 03-05-26.
-//
-
 import SwiftUI
 import SwiftData
 
 @main
 struct CardioTraceApp: App {
     @StateObject private var vm = SessionViewModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -21,5 +15,15 @@ struct CardioTraceApp: App {
                 }
         }
         .modelContainer(for: HRVSession.self)
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .background:
+                vm.handleBackground()
+            case .active:
+                vm.handleForeground()
+            default:
+                break
+            }
+        }
     }
 }
