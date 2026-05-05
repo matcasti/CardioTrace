@@ -226,107 +226,106 @@ struct SessionCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-
+        VStack(alignment: .leading, spacing: 0) {
             // ── Header row
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(session.filename)
-                        .font(.headline.weight(.bold))
+                        .font(.system(.body, weight: .semibold))
                         .lineLimit(1)
-                    Text(session.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(formatDuration(session.duration))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Text(session.createdAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("·")
+                            .foregroundStyle(.quaternary)
+                        Text(formatDuration(session.duration))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer()
 
-                // SRI badge
-                VStack(spacing: 2) {
+                // SRI badge — pill style
+                VStack(spacing: 1) {
                     Text(session.sriScore > 0 ? "\(session.sriScore)" : "--")
-                        .font(.system(size: 22, weight: .black, design: .rounded))
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundStyle(sriColor)
+                        .monospacedDigit()
                     Text("SRI")
-                        .font(.system(size: 9, weight: .bold))
-                        .kerning(1)
-                        .foregroundStyle(sriColor.opacity(0.7))
+                        .font(.system(size: 9, weight: .semibold))
+                        .kerning(0.5)
+                        .foregroundStyle(sriColor.opacity(0.6))
                 }
-                .padding(.horizontal, 14)
+                .frame(width: 52)
                 .padding(.vertical, 8)
-                .background(sriColor.opacity(0.12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(sriColor.opacity(0.3), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .background(sriColor.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             }
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            Divider().padding(.horizontal, 14)
 
             // ── Stats row
-            HStack(spacing: 8) {
-                SessionStatPill(label: "Samples",
-                                value: "\(session.sampleCount)")
-                SessionStatPill(label: "Avg RR",
-                                value: session.avgRR > 0
-                                    ? String(format: "%.0f ms", session.avgRR) : "--")
-                SessionStatPill(label: "RMSSD",
-                                value: session.rmssd > 0
-                                    ? String(format: "%.1f ms", session.rmssd) : "--")
-                SessionStatPill(label: "Quality",
-                                value: String(format: "%.0f%%", session.dataQuality))
+            HStack(spacing: 0) {
+                ForEach([
+                    ("Samples", "\(session.sampleCount)"),
+                    ("Avg RR", session.avgRR > 0 ? String(format: "%.0f ms", session.avgRR) : "--"),
+                    ("RMSSD",  session.rmssd > 0  ? String(format: "%.1f ms", session.rmssd)  : "--"),
+                    ("Quality", String(format: "%.0f%%", session.dataQuality))
+                ], id: \.0) { label, value in
+                    VStack(spacing: 3) {
+                        Text(value)
+                            .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .monospacedDigit()
+                        Text(label)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 10)
 
-            // ── Tags + events
+            // ── Tags + events (conditional)
             if !session.tags.isEmpty || session.eventMarkers.count > 0 {
+                Divider().padding(.horizontal, 14)
                 HStack(spacing: 6) {
                     ForEach(session.tags.prefix(3), id: \.self) { tag in
                         Text(tag)
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(Color(hex: "#6366f1").opacity(0.12))
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Color(hex: "#6366f1").opacity(0.10))
                             .foregroundStyle(Color(hex: "#6366f1"))
                             .clipShape(Capsule())
                     }
+                    Spacer()
                     if session.eventMarkers.count > 0 {
-                        Spacer()
-                        Label("\(session.eventMarkers.count) events",
-                              systemImage: "mappin.circle.fill")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                        Label("\(session.eventMarkers.count)", systemImage: "mappin.circle")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.tertiary)
                     }
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial)
+        .background(.regularMaterial)
         .overlay(
-            RoundedRectangle(cornerRadius: 20)
-                .stroke(
-                    sriColor.opacity(session.sriScore > 0 ? 0.40 : 0.08),
-                    lineWidth: session.sriScore > 0 ? 1.5 : 1
-                )
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(
-            color: session.sriScore > 0 ? sriColor.opacity(0.10) : .clear,
-            radius: 8, x: 0, y: 4
-        )
-
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.04), radius: 6, x: 0, y: 2)
         .contextMenu {
-            Button {
-                onRename?()
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
+            Button { onRename?() } label: { Label("Rename", systemImage: "pencil") }
             Divider()
-            Button(role: .destructive) {
-                onDelete?()
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
+            Button(role: .destructive) { onDelete?() } label: { Label("Delete", systemImage: "trash") }
         }
     }
 

@@ -115,17 +115,22 @@ struct ConnectionCard: View {
             }
 
             if vm.isConnected {
-                HStack {
-                    Text("Data Quality")
-                        .font(.caption.weight(.semibold))
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(qualityColor(vm.dataQuality))
+                        .frame(width: 7, height: 7)
+                    Text("Data quality")
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Text(String(format: "%.1f%%", vm.dataQuality))
-                        .font(.caption.weight(.bold))
+                        .font(.system(.caption, design: .rounded, weight: .bold))
                         .foregroundStyle(qualityColor(vm.dataQuality))
+                        .monospacedDigit()
                 }
-                .padding(10)
-                .background(.thinMaterial)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(qualityColor(vm.dataQuality).opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
         }
@@ -271,51 +276,50 @@ struct StatCard: View {
     let gradient: [String]
     var isActive: Bool = false
 
-    @State private var glowing = false
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.system(size: 9, weight: .bold))
-                .textCase(.uppercase)
-                .kerning(0.8)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            // Thin accent bar at top
+            LinearGradient(
+                colors: gradient.map { Color(hex: $0) },
+                startPoint: .leading, endPoint: .trailing
+            )
+            .frame(height: 3)
+            .clipShape(UnevenRoundedRectangle(
+                topLeadingRadius: 16, topTrailingRadius: 16
+            ))
 
-            HStack(alignment: .lastTextBaseline, spacing: 2) {
-                Text(value)
-                    .font(.system(size: 26, weight: .black, design: .rounded))
-                    .foregroundStyle(LinearGradient(
-                        colors: gradient.map { Color(hex: $0) },
-                        startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .contentTransition(.numericText())
-                    .animation(.spring(duration: 0.4), value: value)
-                if !unit.isEmpty {
-                    Text(unit)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.quaternary)
-                        .padding(.bottom, 2)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold))
+                    .textCase(.uppercase)
+                    .kerning(0.5)
+                    .foregroundStyle(.secondary)
+
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(value)
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .contentTransition(.numericText())
+                        .animation(.spring(duration: 0.4), value: value)
+                    if !unit.isEmpty {
+                        Text(unit)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .padding(.bottom, 1)
+                    }
                 }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial)
+        .background(.regularMaterial)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .shadow(
-            color: isActive ? Color(hex: gradient[0]).opacity(glowing ? 0.4 : 0.08) : .clear,
-            radius: glowing ? 12 : 3, x: 0, y: 0
-        )
-        .animation(
-            isActive ? .easeInOut(duration: 1.4).repeatForever(autoreverses: true) : .default,
-            value: glowing
-        )
-        .onAppear   { glowing = isActive }
-        .onChange(of: isActive) { _, active in glowing = active }
+        .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
     }
 }
 
@@ -326,14 +330,19 @@ struct SRISectionView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Stress Recovery Index").font(.headline.weight(.bold))
-                    Text("Real-time autonomic balance").font(.caption).foregroundStyle(.secondary)
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Stress Recovery Index")
+                        .font(.headline.weight(.bold))
+                    Text("Autonomic nervous system balance")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button { showInfo = true } label: {
-                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 18, weight: .light))
+                        .foregroundStyle(.tertiary)
                 }
             }
 
@@ -366,18 +375,17 @@ struct SRIMetricRow: View {
     var body: some View {
         HStack {
             Text(label)
-                .font(.system(size: 10, weight: .bold))
-                .textCase(.uppercase)
-                .kerning(0.5)
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
             Text(value)
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .font(.system(.callout, design: .rounded, weight: .semibold))
                 .foregroundStyle(.primary)
+                .monospacedDigit()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(.thinMaterial)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.primary.opacity(0.04))
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
@@ -387,36 +395,30 @@ struct RecordingCard: View {
     @EnvironmentObject var vm: SessionViewModel
     @Binding var showEventSheet: Bool
     @State private var tagText  = ""
-    @State private var recBlink = false   // drives the blinking REC dot
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             HStack {
-                Label("Recording", systemImage: "record.circle").font(.subheadline.weight(.bold))
+                Label("Recording", systemImage: "record.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
 
                 Spacer()
-                // ── Blinking REC badge + monospaced timer ──
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Color(hex: "#ef4444"))
-                        .frame(width: 7, height: 7)
-                        .opacity(recBlink ? 1 : 0.2)
-                        .animation(
-                            .easeInOut(duration: 0.75).repeatForever(autoreverses: true),
-                            value: recBlink
-                        )
+
+                HStack(spacing: 5) {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 7))
+                        .foregroundStyle(Color(hex: "#ef4444"))
+                        .symbolEffect(.pulse)
                     Text(formattedTime(vm.recordingTime))
-                        .font(.system(.subheadline, design: .monospaced, weight: .bold))
-                        .foregroundStyle(Color(hex: "#ec4899"))
+                        .font(.system(.subheadline, design: .monospaced, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
                 }
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(Color(hex: "#ec4899").opacity(0.10))
-                .overlay(
-                    Capsule().stroke(Color(hex: "#ec4899").opacity(0.30), lineWidth: 1)
-                )
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(hex: "#ef4444").opacity(0.08))
                 .clipShape(Capsule())
             }
-            .onAppear { recBlink = true }
 
             HStack(spacing: 10) {
                 Button { showEventSheet = true } label: {

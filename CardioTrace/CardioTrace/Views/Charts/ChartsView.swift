@@ -60,20 +60,29 @@ struct ChartCard<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: icon)
-                .font(.subheadline.weight(.bold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 2)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .textCase(.uppercase)
+                    .kerning(0.3)
+                    .foregroundStyle(.secondary)
+            }
             content()
                 .frame(height: 160)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial)
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.07), lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(.regularMaterial)
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .shadow(color: .black.opacity(0.03), radius: 6, x: 0, y: 2)
     }
 }
 
