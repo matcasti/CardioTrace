@@ -674,7 +674,9 @@ async function saveSession(sessionData, sessionId = null) {
             timestamp: Date.now(),
             date: new Date().toISOString(),
             startTime: sessionData.startTime || sessionStartTime,
-            duration: Math.floor((Date.now() - (sessionData.startTime || calibrationStartTime || sessionStartTime)) / 1000),
+            duration: sessionData.duration !== undefined
+                ? sessionData.duration
+                : Math.floor((Date.now() - (sessionData.startTime || calibrationStartTime || sessionStartTime)) / 1000),
             filename: sessionData.filename || document.getElementById('filename').value || 'polar-h10-data',
             rrIntervals: sessionData.rrIntervals,
             timestamps: sessionData.timestamps,
@@ -1011,9 +1013,6 @@ async function renderHistoryTable() {
             tag:    historyTableTagFilter.value,
             sort:   historyTableSortFilter.value,
         });
-        const tableSearch   = historyTableSearch?.value   ?? historySearch.value;
-        const tableTagVal   = historyTableTagFilter?.value ?? tagFilter.value;
-        const tableSortVal  = historyTableSortFilter?.value ?? sortFilter.value;
 
         if (filtered.length === 0) {
             historyTableBody.innerHTML = `
@@ -1159,7 +1158,11 @@ async function restoreSession(id) {
         renderAnnotations();
         renderTags();
 
-        closeHistory();
+        // Dismiss whichever history UI is currently open
+        historyPanel.classList.remove('active');
+        historyOverlay.classList.remove('active');
+        historyTableModal.classList.remove('active');
+        historyTableOverlay.classList.remove('active');
         await updateHistoryBadge();
 
         console.log(`✓ Session restored: ${session.stats.samples} samples, SRI: ${sriScore}`);
@@ -1172,7 +1175,7 @@ async function restoreSession(id) {
 async function downloadSession(id) {
     try {
         const session = await loadSession(id);
-        const sessionDate = new Date(sessionStartTime);
+        const sessionDate = new Date(session.startTime || session.timestamp);
         const dateStr = sessionDate.toISOString().slice(0, 16);
         const tagsStr = session.tags && session.tags.length > 0 ? '_' + session.tags.join('-') : '';
         const filename = `${session.filename || 'polar-h10'}_${dateStr}${tagsStr}`;
@@ -1675,6 +1678,11 @@ async function performSessionReset(showConfirm = true) {
 
 // Connect to device
 async function connect() {
+    if (!navigator.bluetooth) {
+        status.textContent = 'Bluetooth Not Supported';
+        alert('Web Bluetooth requires Chrome or Edge on desktop/Android over a secure (HTTPS) connection.');
+        return;
+    }
     try {
         status.textContent = 'Scanning...';
         device = await navigator.bluetooth.requestDevice({
@@ -1958,7 +1966,6 @@ function handleHRData(event) {
     const rrPresent = flags & 0x10;
     if (rrPresent) {
       let offset = hrFormat === 0 ? 2 : 3;
-      if (flags & 0x08) offset += 2; // skip Energy Expended field if present
       while (offset < value.byteLength) {
             const rr = value.getUint16(offset, true) / 1024 * 1000;
 
@@ -2368,15 +2375,17 @@ function drawSRIGauge(score) {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Animated pulse effect for excellent scores (only in dark mode)
+    // Subtle outer glow ring for excellent scores (dark mode)
     if (score >= 75 && !isLight) {
-        const pulseOpacity = 0.3 + Math.sin(Date.now() / 500) * 0.2;
-        ctx.globalAlpha = pulseOpacity;
+        ctx.globalAlpha = 0.4;
         ctx.beginPath();
         ctx.arc(centerX, centerY, baseRadius + lineWidth / 2 + 5, 0, 2 * Math.PI);
         ctx.strokeStyle = '#10b981';
         ctx.lineWidth = 2;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = '#10b981';
         ctx.stroke();
+        ctx.shadowBlur = 0;
         ctx.globalAlpha = 1;
     }
 }
@@ -2448,6 +2457,7 @@ function updateSRI() {
             time: (Date.now() - calibrationStartTime) / 1000,
             score: score
         });
+        if (sriHistory.length > 600) sriHistory.shift();
     }
 }
 
@@ -3082,9 +3092,10 @@ async function generatePDFReport() {
     addBodyText('Separates sympathetic and parasympathetic nervous system contributions');
     yPos += 2;
 
-    addKeyValue('VLF Power (0.003-0.04 Hz)', vlfPower.toFixed(1) + ' ms² (' + (vlfPower/totalPower*100).toFixed(1) + '%)', 4);
-    addKeyValue('LF Power (0.04-0.15 Hz)', lfPower.toFixed(1) + ' ms² (' + (lfPower/totalPower*100).toFixed(1) + '%)', 4);
-    addKeyValue('HF Power (0.15-0.4 Hz)', hfPower.toFixed(1) + ' ms² (' + (hfPower/totalPower*100).toFixed(1) + '%)', 4);
+    const safePct = (val) => totalPower > 0 ? (val / totalPower * 100).toFixed(1) : '0.0';
+    addKeyValue('VLF Power (0.003-0.04 Hz)', vlfPower.toFixed(1) + ' ms² (' + safePct(vlfPower) + '%)', 4);
+    addKeyValue('LF Power (0.04-0.15 Hz)',   lfPower.toFixed(1)  + ' ms² (' + safePct(lfPower)  + '%)', 4);
+    addKeyValue('HF Power (0.15-0.4 Hz)',    hfPower.toFixed(1)  + ' ms² (' + safePct(hfPower)  + '%)', 4);
     addKeyValue('Total Power', totalPower.toFixed(1) + ' ms²', 4);
     addKeyValue('LF/HF Ratio', lfhfRatio.toFixed(2), 4);
 
