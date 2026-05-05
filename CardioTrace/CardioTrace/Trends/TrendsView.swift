@@ -346,15 +346,11 @@ struct TrendsView: View {
     @MainActor
     private func computeSD1SD2() async {
         let snap = last30.filter { $0.rmssd > 0 }
-        let computed = await Task.detached(priority: .utility) {
-            snap.map { s -> (date: Date, sd1: Double, sd2: Double) in
-                let rr = s.rrIntervals
-                return (s.createdAt,
-                        HRVEngine.shared.calculateSD1(rr),
-                        HRVEngine.shared.calculateSD2(rr))
-            }
-        }.value
-        sd1sd2Data = computed
+        sd1sd2Data = snap.map { s in
+            (date: s.createdAt,
+             sd1: HRVEngine.shared.calculateSD1(s.rrIntervals),
+             sd2: HRVEngine.shared.calculateSD2(s.rrIntervals))
+        }
     }
 }
 

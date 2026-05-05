@@ -118,13 +118,13 @@ private struct OnboardingHRVPage: View {
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
                     OnboardingExplainerCard(icon: "❤️", title: "Beat-to-beat variation",
-                        body: "Your heart doesn't beat at perfectly regular intervals — and that's healthy. The variation between beats reflects how well your autonomic nervous system is functioning.")
+                        content: "Your heart doesn't beat at perfectly regular intervals — and that's healthy. The variation between beats reflects how well your autonomic nervous system is functioning.")
                     OnboardingExplainerCard(icon: "🧠", title: "Autonomic nervous system balance",
-                        body: "HRV reflects the balance between sympathetic (fight-or-flight) and parasympathetic (rest-and-digest) branches. Higher HRV generally indicates better recovery capacity.")
+                        content: "HRV reflects the balance between sympathetic (fight-or-flight) and parasympathetic (rest-and-digest) branches. Higher HRV generally indicates better recovery capacity.")
                     OnboardingExplainerCard(icon: "📈", title: "Why it matters",
-                        body: "Low HRV correlates with stress, fatigue, and overtraining. High HRV indicates cardiovascular fitness and autonomic resilience. Trends over days matter more than single readings.")
+                        content: "Low HRV correlates with stress, fatigue, and overtraining. High HRV indicates cardiovascular fitness and autonomic resilience. Trends over days matter more than single readings.")
                     OnboardingExplainerCard(icon: "🔬", title: "Key metrics",
-                        body: "RMSSD measures short-term parasympathetic activity. LF/HF ratio reflects sympathovagal balance. The SRI combines these into a single 0–100 recovery score.")
+                        content: "RMSSD measures short-term parasympathetic activity. LF/HF ratio reflects sympathovagal balance. The SRI combines these into a single 0–100 recovery score.")
                     Spacer().frame(height: 56)
                 }
                 .padding(.horizontal, 22)
@@ -273,13 +273,13 @@ private struct OnboardingFeaturePill: View {
 }
 
 private struct OnboardingExplainerCard: View {
-    let icon: String; let title: String; let body: String
+    let icon: String; let title: String; let content: String
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             Text(icon).font(.title2)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.headline.weight(.bold))
-                Text(body).font(.subheadline).foregroundStyle(.secondary)
+                Text(content).font(.subheadline).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
