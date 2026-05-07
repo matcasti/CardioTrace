@@ -187,7 +187,7 @@ let calibrationStartTime = null;
 let timerInterval = null;
 let autoSaveInterval = null;
 let currentSessionId = null;
-let lastPSDResult = null; // Store last PSD calculation for reuse
+let lastCWTResult = null; // Store last CWT calculation for band power reuse
 let dataQuality = 100;
 let selectedEventType = 'Note';
 let currentHR = 0;
@@ -553,10 +553,179 @@ function smoothSpectrum(power, windowSize) {
     return smoothed;
 }
 
-// Update PSD chart
-function updatePSDChart() {
-    const psdChart = document.getElementById('psdChart');
-    let placeholder = psdChart.querySelector('.chart-placeholder');
+// ── CWT / Spectrogram infrastructure ─────────────────────────────────────
+
+const CWT_FS      = 4;    // Hz  – uniform interpolation rate
+const CWT_OMEGA0  = 6;    // rad – Morlet central frequency
+const CWT_VOICES  = 22;   // log-spaced frequency bins
+const CWT_F_MIN   = 0.005;
+const CWT_F_MAX   = 0.40;
+
+function nextPow2(n) { let p = 1; while (p < n) p <<= 1; return p; }
+
+// In-place iterative Cooley-Tukey radix-2 FFT
+function fftInPlace(re, im, inverse = false) {
+    const n    = re.length;
+    const sign = inverse ? 1 : -1;
+    // Bit-reversal permutation
+    for (let i = 1, j = 0; i < n; i++) {
+        let bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            let t = re[i]; re[i] = re[j]; re[j] = t;
+            t = im[i]; im[i] = im[j]; im[j] = t;
+        }
+    }
+    // Butterfly stages
+    for (let len = 2; len <= n; len <<= 1) {
+        const ang = sign * 2 * Math.PI / len;
+        const wr0 = Math.cos(ang), wi0 = Math.sin(ang);
+        for (let i = 0; i < n; i += len) {
+            let wr = 1, wi = 0;
+            const half = len >> 1;
+            for (let k = 0; k < half; k++) {
+                const tr = wr * re[i+k+half] - wi * im[i+k+half];
+                const ti = wr * im[i+k+half] + wi * re[i+k+half];
+                re[i+k+half] = re[i+k] - tr;
+                im[i+k+half] = im[i+k] - ti;
+                re[i+k] += tr;
+                im[i+k] += ti;
+                const nr = wr * wr0 - wi * wi0;
+                wi = wr * wi0 + wi * wr0;
+                wr = nr;
+            }
+        }
+    }
+    if (inverse) { for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; } }
+}
+
+// Linear interpolation of non-uniform RR series → uniform CWT_FS grid
+function interpolateRRUniform(rrMs) {
+    const n = rrMs.length;
+    if (n < 4) return { signal: new Float64Array(0), times: new Float64Array(0) };
+    // Beat start times (cumulative RR sum, seconds)
+    const beatT = new Float64Array(n);
+    for (let i = 1; i < n; i++) beatT[i] = beatT[i-1] + rrMs[i-1] / 1000;
+    const nSamp = Math.floor(beatT[n-1] * CWT_FS) + 1;
+    const sig   = new Float64Array(nSamp);
+    const tArr  = new Float64Array(nSamp);
+    let j = 0;
+    for (let i = 0; i < nSamp; i++) {
+        const t = i / CWT_FS;
+        tArr[i] = t;
+        while (j < n - 2 && beatT[j+1] <= t) j++;
+        const dT = beatT[j+1] - beatT[j];
+        const a  = dT > 0 ? (t - beatT[j]) / dT : 0;
+        sig[i]  = rrMs[j] + a * (rrMs[j+1] - rrMs[j]);
+    }
+    return { signal: sig, times: tArr };
+}
+
+// Morlet CWT via FFT convolution (Torrence & Compo 1998).
+// Returns scalogram, time-averaged band powers and LF/HF ratio, or null if
+// insufficient data.
+let _cwtLastUpdate = 0;
+function computeMorletCWT(rrMs) {
+    const { signal, times } = interpolateRRUniform(rrMs);
+    const N = signal.length;
+    if (N < 32) return null;
+
+    // Rolling buffer cap (~5 min at CWT_FS)
+    const MAX_N = 1200;
+    const useN  = Math.min(N, MAX_N);
+    const sig   = signal.subarray(N - useN);
+    const tim   = times.subarray(N - useN);
+
+    // Demean
+    let mean = 0;
+    for (let i = 0; i < useN; i++) mean += sig[i];
+    mean /= useN;
+
+    // Zero-pad to next power-of-2 × 2 (reduces circular wrap-around artifacts)
+    const NFFT = nextPow2(useN * 2);
+    const xRe  = new Float64Array(NFFT);
+    const xIm  = new Float64Array(NFFT);
+    for (let i = 0; i < useN; i++) xRe[i] = sig[i] - mean;
+    fftInPlace(xRe, xIm, false);
+
+    // Log-spaced frequencies
+    const freqs = new Float64Array(CWT_VOICES);
+    for (let v = 0; v < CWT_VOICES; v++)
+        freqs[v] = CWT_F_MIN * Math.pow(CWT_F_MAX / CWT_F_MIN, v / (CWT_VOICES - 1));
+
+    const scalogram = [];           // [CWT_VOICES][useN] power
+    const avgPow    = new Float64Array(CWT_VOICES);
+    const TWOPI     = 2 * Math.PI;
+    const dt        = 1 / CWT_FS;
+
+    for (let vi = 0; vi < CWT_VOICES; vi++) {
+        const f        = freqs[vi];
+        const sSeconds = CWT_OMEGA0 / (TWOPI * f);       // scale in seconds
+        // Morlet wavelet spectrum (normalised, one-sided)
+        const norm = Math.sqrt(TWOPI * sSeconds / dt) * Math.pow(Math.PI, -0.25);
+        const wRe  = new Float64Array(NFFT);
+
+        for (let k = 0; k < NFFT; k++) {
+            const fk = (k <= NFFT >> 1 ? k : k - NFFT) * CWT_FS / NFFT;
+            if (fk <= 0) continue;                       // Heaviside (one-sided)
+            const arg = sSeconds * TWOPI * fk - CWT_OMEGA0;
+            wRe[k] = norm * Math.exp(-arg * arg / 2);
+        }
+
+        // Multiply in frequency domain (wavelet spectrum is real)
+        const cRe = new Float64Array(NFFT);
+        const cIm = new Float64Array(NFFT);
+        for (let k = 0; k < NFFT; k++) {
+            cRe[k] = xRe[k] * wRe[k];
+            cIm[k] = xIm[k] * wRe[k];
+        }
+        fftInPlace(cRe, cIm, true);                      // IFFT
+
+        const pow = new Float64Array(useN);
+        let sumP  = 0;
+        for (let i = 0; i < useN; i++) {
+            const p = cRe[i] * cRe[i] + cIm[i] * cIm[i];
+            pow[i] = p; sumP += p;
+        }
+        avgPow[vi] = sumP / useN;
+        scalogram.push(pow);
+    }
+
+    // Band power integrals (trapezoidal over log-freq axis)
+    let vlfP = 0, lfP = 0, hfP = 0;
+    for (let vi = 0; vi < CWT_VOICES; vi++) {
+        const f  = freqs[vi];
+        const p  = avgPow[vi];
+        const df = vi < CWT_VOICES - 1
+            ? freqs[vi+1] - f
+            : (vi > 0 ? f - freqs[vi-1] : f * 0.1);
+        if      (f >= 0.003 && f < 0.04)  vlfP += p * df;
+        else if (f >= 0.04  && f < 0.15)  lfP  += p * df;
+        else if (f >= 0.15  && f <= 0.40) hfP  += p * df;
+    }
+
+    const totalP  = vlfP + lfP + hfP;
+    const lfhfR   = hfP > 1e-12 ? lfP / hfP : 0;
+
+    return {
+        scalogram,
+        times:    Array.from(tim),
+        freqs:    Array.from(freqs),
+        avgPow:   Array.from(avgPow),
+        vlfPow: vlfP, lfPow: lfP, hfPow: hfP, totalPow: totalP,
+        lfhfRatio: lfhfR,
+        vlfPct: totalP > 0 ? vlfP / totalP * 100 : 0,
+        lfPct:  totalP > 0 ? lfP  / totalP * 100 : 0,
+        hfPct:  totalP > 0 ? hfP  / totalP * 100 : 0,
+        dataLength: rrMs.length,
+    };
+}
+
+// Update spectrogram chart (Morlet CWT)
+function updateSpectrogramChart() {
+    const el = document.getElementById('psdChart');
+    let placeholder = el.querySelector('.chart-placeholder');
 
     if (rrIntervals.length < 50) {
         if (!placeholder) {
@@ -564,149 +733,60 @@ function updatePSDChart() {
             placeholder.className = 'chart-placeholder';
             placeholder.innerHTML = `
                 <div class="chart-placeholder-icon">📊</div>
-                <div class="chart-placeholder-text">Chart available after 50 RR intervals</div>
-            `;
-            psdChart.appendChild(placeholder);
+                <div class="chart-placeholder-text">Spectrogram available after 50 RR intervals</div>`;
+            el.appendChild(placeholder);
         }
-        psdChart.classList.add('chart-blurred');
-        return;
-    } else {
-        if (placeholder) placeholder.remove();
-        psdChart.classList.remove('chart-blurred');
-    }
-
-    const { freq, power } = calculatePSD(rrIntervals, timestamps);
-
-    if (freq.length === 0 || power.length === 0) {
-        if (!placeholder) {
-            placeholder = document.createElement('div');
-            placeholder.className = 'chart-placeholder';
-            placeholder.innerHTML = `
-                <div class="chart-placeholder-icon">⚠️</div>
-                <div class="chart-placeholder-text">Insufficient valid data for PSD calculation</div>
-            `;
-            psdChart.appendChild(placeholder);
-        }
-        psdChart.classList.add('chart-blurred');
+        el.classList.add('chart-blurred');
         return;
     }
+    if (placeholder) { placeholder.remove(); }
+    el.classList.remove('chart-blurred');
 
-    // Calculate band powers with improved integration
-    const vlfPower = integrateBandPower(freq, power, 0.003, 0.04);
-    const lfPower = integrateBandPower(freq, power, 0.04, 0.15);
-    const hfPower = integrateBandPower(freq, power, 0.15, 0.4);
-    const totalPower = integrateBandPower(freq, power, 0.003, 0.4);
+    // Internal throttle: CWT is heavier than a line update — cap at 0.5 Hz
+    const now = Date.now();
+    if (now - _cwtLastUpdate < 2000) return;
+    _cwtLastUpdate = now;
 
+    const result = computeMorletCWT(rrIntervals);
+    if (!result) return;
 
-    // build bin areas by trapezoid attribution (handles nonuniform spacing)
-    const binAreas = new Array(power.length).fill(0);
-    for (let i = 1; i < freq.length; i++) {
-      const df = freq[i] - freq[i - 1];
-      if (!isFinite(df) || df <= 0) continue;
-      const avgDensity = 0.5 * (power[i] + power[i - 1]); // ms^2/Hz
-      const area = avgDensity * df;                       // ms^2
-      // distribute half to left bin and half to right bin for smoother plotting
-      binAreas[i - 1] += area * 0.5;
-      binAreas[i]     += area * 0.5;
-    }
+    lastCWTResult = result; // cache for SRI reuse
 
-    // normalize so sum(binAreas) == 1 (unitless fractions)
-    const totalIntegrated = totalPower || binAreas.reduce((s, a) => s + a, 0) || 1;
-    const normalized = binAreas.map(a => a / totalIntegrated); // sums ≈ 1
-    const powerNormalized = normalized.map(n => n * 100);        // sums ≈ 100
+    // Decimate display to ~1 Hz to keep Plotly responsive
+    const DECIMATE  = Math.max(1, Math.round(CWT_FS));
+    const nT        = result.times.length;
+    const dispIdx   = [];
+    for (let i = 0; i < nT; i += DECIMATE) dispIdx.push(i);
+    const dispTimes = dispIdx.map(i => result.times[i]);
 
-    // band percentages for annotations
-    const vlfPct = (vlfPower / totalPower) * 100;
-    const lfPct  = (lfPower  / totalPower) * 100;
-    const hfPct  = (hfPower  / totalPower) * 100;
-
-    // Calculate LF/HF ratio with safety checks
-    const lfhfRatio = (hfPower > 0 && isFinite(lfPower) && isFinite(hfPower))
-        ? (lfPower / hfPower)
-        : 0;
-
-    // STORE the PSD result for SRI calculation to use
-    lastPSDResult = {
-        freq,
-        power,
-        lfPower,
-        hfPower,
-        lfhfRatio,
-        vlfPower,
-        totalPower,
-        dataLength: rrIntervals.length,
-        timestampsLength: timestamps.length
-    };
-
-    // Validate all power values
-    const isValidPower = (val) => isFinite(val) && val >= 0;
-
-    // Mark VLF, LF, and HF bands
-    const shapes = [
-        {
-            type: 'rect',
-            xref: 'x', yref: 'paper',
-            x0: 0.003, x1: 0.04,
-            y0: 0, y1: 1,
-            fillcolor: 'rgba(156, 163, 175, 0.15)',
-            line: { width: 0 }
-        },
-        {
-            type: 'rect',
-            xref: 'x', yref: 'paper',
-            x0: 0.04, x1: 0.15,
-            y0: 0, y1: 1,
-            fillcolor: 'rgba(99, 102, 241, 0.15)',
-            line: { width: 0 }
-        },
-        {
-            type: 'rect',
-            xref: 'x', yref: 'paper',
-            x0: 0.15, x1: 0.4,
-            y0: 0, y1: 1,
-            fillcolor: 'rgba(236, 72, 153, 0.15)',
-            line: { width: 0 }
-        }
-    ];
+    // Z matrix [n_freqs][n_disp_times] — log10 power for visual dynamic range
+    const Z = result.freqs.map((_, fi) =>
+        dispIdx.map(ti => {
+            const p = result.scalogram[fi][ti];
+            return p > 0 ? Math.log10(p) : -8;
+        })
+    );
 
     const annotations = [
-        {
-            x: 0.02, y: 1.08, yref: 'paper',
-            text: `VLF (${isValidPower(vlfPower) ? vlfPct.toFixed(1) : '0.0'}%)`,
-            showarrow: false,
-            font: { size: 12, color: '#9ca3af', weight: 1000 },
-            xanchor: 'center'
-        },
-        {
-            x: 0.095, y: 1.08, yref: 'paper',
-            text: `LF (${isValidPower(lfPower) ? lfPct.toFixed(1) : '0.0'}%)`,
-            showarrow: false,
-            font: { size: 12, color: '#6366f1', weight: 1000 },
-            xanchor: 'center'
-        },
-        {
-            x: 0.275, y: 1.08, yref: 'paper',
-            text: `HF (${isValidPower(hfPower) ? hfPct.toFixed(1) : '0.0'}%)`,
-            showarrow: false,
-            font: { size: 12, color: '#ec4899', weight: 1000 },
-            xanchor: 'center'
-        },
-        {
-            x: 0.40, y: 1.08, yref: 'paper',
-            text: `LF/HF: ${isValidPower(lfhfRatio) ? lfhfRatio.toFixed(2) : '0.00'}`,
-            showarrow: false,
-            font: { size: 12, color: '#22d3ee', weight: 1000 },
-            xanchor: 'right'
-        }
+        { xref:'paper', yref:'paper', x:0.02, y:0.12, xanchor:'left',
+          text:`<b>VLF</b> ${result.vlfPct.toFixed(1)}%`, showarrow:false,
+          font:{ size:11, color:'#FFF' } },
+        { xref:'paper', yref:'paper', x:0.02, y:0.55, xanchor:'left',
+          text:`<b>LF</b> ${result.lfPct.toFixed(1)}%`, showarrow:false,
+          font:{ size:11, color:'#FFF' } },
+        { xref:'paper', yref:'paper', x:0.02, y:0.85, xanchor:'left',
+          text:`<b>HF</b> ${result.hfPct.toFixed(1)}%`, showarrow:false,
+          font:{ size:11, color:'#FFF' } },
+        { xref:'paper', yref:'paper', x:0.99, y:0.99, xanchor:'right', yanchor:'top',
+          text:`LF/HF: ${result.lfhfRatio.toFixed(2)}`, showarrow:false,
+          font:{ size:11, color:'#FFF' } },
     ];
 
-    Plotly.update('psdChart', {
-        x: [freq],
-        y: [powerNormalized]
-    }, {
-        shapes: shapes,
-        annotations: annotations
-    }, [0]);
+    Plotly.update('psdChart',
+        { x: [dispTimes], y: [result.freqs], z: [Z] },
+        { annotations },
+        [0]
+    );
 }
 
 // Robust download function for desktop and mobile (iOS-compatible)
@@ -1305,7 +1385,7 @@ async function restoreSession(id) {
         updateRRChart();
         updateRollingRMSSD();
         updatePoincareChart();
-        updatePSDChart();
+        updateSpectrogramChart();
         updateHRChart();
         updateVagalProxyChart();
         updateSRI();
@@ -1587,11 +1667,26 @@ const poincareLayout = {
     yaxis: { ...ecgLayout.yaxis, title: 'RR(n+1) (ms)' }
 };
 
-const psdLayout = {
-    ...ecgLayout,
-    margin: { t: 20, r: 20, l: 50, b: 40 },
-    xaxis: { ...ecgLayout.xaxis, title: 'Frequency (Hz)', range: [0, 0.4] },
-    yaxis: { ...ecgLayout.yaxis, title: 'Normalized Power (%)' }
+const spectrogramLayout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor:  'rgba(0,0,0,0)',
+    margin: { t: 30, r: 20, l: 60, b: 40 },
+    autosize: true,
+    font: { color: chartColor, family: 'Inter, sans-serif' },
+    hovermode: 'closest',
+    xaxis: { title: 'Time (s)', color: chartColor, showgrid: false, zeroline: false, fixedrange: true },
+    yaxis: {
+        title: 'Frequency (Hz)', type: 'log',
+        color: chartColor, showgrid: false, zeroline: false, fixedrange: true,
+        tickvals: [0.005, 0.01, 0.04, 0.15, 0.40],
+        ticktext: ['0.005', '0.01', '0.04', '0.15', '0.40'],
+    },
+    shapes: [
+        { type:'line', xref:'paper', yref:'y', x0:0, x1:1, y0:0.04, y1:0.04,
+          line:{ color:'#FFF', width:1.5, dash:'dot' } },
+        { type:'line', xref:'paper', yref:'y', x0:0, x1:1, y0:0.15, y1:0.15,
+          line:{ color:'#FFF', width:1.5, dash:'dot' } },
+    ],
 };
 
 const hrLayout = {
@@ -1641,18 +1736,23 @@ Plotly.newPlot('poincareChart', [
 ], poincareLayout, plotConfig);
 
 Plotly.newPlot('psdChart', [{
-    x: [], y: [], type: 'scatter', mode: 'lines',
-    line: { color: '#10b981', width: 2.5 },
-    fill: 'tozeroy',
-    fillcolor: 'rgba(16, 185, 129, 0.2)',
-    hovertemplate: 'Frequency: %{x:.2f}Hz<br>Power: %{y:.2f}%<extra></extra>'
-}], psdLayout, plotConfig);
+    type: 'heatmap',
+    x: [], y: [], z: [[]],
+    colorscale: [
+      ['0', 'rgb(224,243,248)'],
+      ['0.5', 'rgb(116,173,209)'],
+      ['1', 'rgb(49,54,149)']
+    ],
+    showscale: false,
+    zsmooth: 'best',
+    hovertemplate: 'Time: %{x:.1f}s<br>Freq: %{y:.3f} Hz<br>Log Power: %{z:.2f}<extra></extra>'
+}], spectrogramLayout, plotConfig);
 
 Plotly.update('ecgChart',          {x: [[]], y: [[]]},               {},                    [0]);
 Plotly.update('rrChart',           {x: [[]], y: [[]]},               {shapes:[],annotations:[]}, [0]);
 Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]},               {shapes:[],annotations:[]}, [0]);
 Plotly.update('poincareChart',     {x:[[],[],[]], y:[[],[],[]]},     {annotations:[]},      [0,1,2]);
-Plotly.update('psdChart',          {x: [[]], y: [[]]},               {shapes:[],annotations:[]}, [0]);
+Plotly.update('psdChart',          {x: [[]], y: [[]], z: [[[]]]},    {annotations:[]},           [0]);
 
 Plotly.newPlot('hrChart', [{
     x: [], y: [], type: 'scatter', mode: 'lines', name: 'HR',
@@ -1920,7 +2020,7 @@ async function performSessionReset(showConfirm = true) {
     Plotly.update('ecgChart', {x: [[]], y: [[]]}, {}, [0]);
     Plotly.update('rrChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
     Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
-    Plotly.update('psdChart',          {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
+    Plotly.update('psdChart',          {x: [[]], y: [[]], z: [[[]]]},  {annotations:[]},           [0]);
     Plotly.update('hrChart',           {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
     Plotly.update('vagalProxyChart',   {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
     Plotly.update('poincareChart',     {x:[[],[],[]], y:[[],[],[]]},   {annotations:[]},           [0,1,2]);
@@ -2141,7 +2241,7 @@ function disconnect(skipConfirm = false) {
         Plotly.update('rrChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
         Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
         Plotly.update('poincareChart',   {x:[[],[],[]], y:[[],[],[]]},   {annotations:[]},           [0,1,2]);
-        Plotly.update('psdChart',        {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
+        Plotly.update('psdChart',        {x: [[]], y: [[]], z: [[[]]]},  {annotations:[]},           [0]);
         Plotly.update('hrChart',         {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
         Plotly.update('vagalProxyChart', {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
 
@@ -2267,7 +2367,7 @@ function handleHRData(event) {
 
         // Update stats and charts only after calibration
         if (!isCalibrating && calibrationStartTime) {
-            if (shouldUpdateChart('psd'))        updatePSDChart();
+            if (shouldUpdateChart('psd'))        updateSpectrogramChart();
             updateStats();
             flashStatCards();
             if (shouldUpdateChart('rr'))         updateRRChart();
@@ -2363,27 +2463,16 @@ function calculateSRI(rrData = null, timeData = null) {
     }
     const rmssdNormalized = Math.min(100, Math.max(0, (rmssdValue / 100) * 100));
 
-    // Component 2: LF/HF Ratio (35% weight)
-    // Use cached PSD result if analyzing the same current session data as the chart
-    let lfPower, hfPower, lfhfRatio;
-
-    const isCurrentData = !rrData && !timeData; // Using current session data
-
-    if (isCurrentData && lastPSDResult &&
-        lastPSDResult.dataLength === rrIntervals.length &&
-        lastPSDResult.timestampsLength === timestamps.length &&
-        analysisRR.length === rrIntervals.length &&
-        analysisTimes.length === timestamps.length) {
-        // Perfect match - reuse the PSD calculation from the chart
-        lfPower = lastPSDResult.lfPower;
-        hfPower = lastPSDResult.hfPower;
-        lfhfRatio = lastPSDResult.lfhfRatio;
+    // Component 2: LF/HF Ratio via Morlet CWT (35% weight)
+    const isCurrentData = !rrData && !timeData;
+    let lfhfRatio = 0;
+    if (isCurrentData && lastCWTResult &&
+        lastCWTResult.dataLength === rrIntervals.length) {
+        // Reuse result already computed by the spectrogram chart
+        lfhfRatio = lastCWTResult.lfhfRatio;
     } else {
-        // Calculate PSD for historical/different data
-        const { freq, power } = calculatePSD(analysisRR, analysisTimes);
-        lfPower = integrateBandPower(freq, power, 0.04, 0.15);
-        hfPower = integrateBandPower(freq, power, 0.15, 0.4);
-        lfhfRatio = (hfPower > 0 && isFinite(lfPower) && isFinite(hfPower)) ? (lfPower / hfPower) : 0;
+        const cwt = computeMorletCWT(analysisRR);
+        lfhfRatio = cwt ? cwt.lfhfRatio : 0;
     }
 
     // Normalize LF/HF: Inverse relationship - lower is better
@@ -3205,9 +3294,9 @@ async function generatePDFReport() {
 
     try {
         // ── Capture chart images ─────────────────────────────────────────────
-        const scale = 2;
+        const scale = 10;
         const [imgPSD, imgPoincare, imgRR, imgRMSSD, imgHR, imgVagal] = await Promise.all([
-            Plotly.toImage('psdChart',          { format: 'png', width: 1100, height: 420, scale }),
+            Plotly.toImage('psdChart',          { format: 'png', width: 1100, height: 600, scale }),
             Plotly.toImage('poincareChart',     { format: 'png', width:  700, height: 600, scale }),
             Plotly.toImage('rrChart',           { format: 'png', width: 1100, height: 380, scale }),
             rollingRMSSD.length > 0
@@ -3250,12 +3339,14 @@ async function generatePDFReport() {
         const minHR  = Math.min(...hrVals);
         const maxHR  = Math.max(...hrVals);
 
-        const psd       = calculatePSD(rrIntervals, timestamps);
-        const vlfPow    = integrateBandPower(psd.freq, psd.power, 0.003, 0.04);
-        const lfPow     = integrateBandPower(psd.freq, psd.power, 0.04,  0.15);
-        const hfPow     = integrateBandPower(psd.freq, psd.power, 0.15,  0.40);
-        const totPow    = vlfPow + lfPow + hfPow;
-        const lfhfRatio = hfPow > 0 ? lfPow / hfPow : 0;
+        const cwtRep    = (lastCWTResult && lastCWTResult.dataLength === rrIntervals.length)
+                          ? lastCWTResult
+                          : (computeMorletCWT(rrIntervals) || {});
+        const vlfPow    = cwtRep.vlfPow    || 0;
+        const lfPow     = cwtRep.lfPow     || 0;
+        const hfPow     = cwtRep.hfPow     || 0;
+        const totPow    = cwtRep.totalPow  || 0;
+        const lfhfRatio = cwtRep.lfhfRatio || 0;
 
         const sriResult = calculateSRI();
         const sri       = sriResult ? sriResult.score : 0;
@@ -3552,7 +3643,7 @@ ${sriResult ? (() => {
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Frequency & Geometric Analysis</span></div>
   <div class="charts-2col">
     <div class="chart-card">
-      <div class="chart-card-label">Power Spectral Density — Lomb-Scargle Periodogram</div>
+      <div class="chart-card-label">HRV Wavelet Spectrogram — Morlet CWT (ω₀ = 6, 4 Hz interpolation, Plasma colorscale = log₁₀ power)</div>
       <img src="${imgPSD}" alt="Power Spectral Density chart">
     </div>
     <div class="chart-card">
@@ -3567,7 +3658,7 @@ ${sriResult ? (() => {
   </div>
   <div class="note">
     <strong>Band legend:</strong> VLF 0.003–0.04 Hz · LF 0.04–0.15 Hz · HF 0.15–0.4 Hz.
-    PSD computed via Lomb-Scargle periodogram on unevenly-sampled RR series, normalised so ∫PSD·df = signal variance.
+    Spectrogram computed via Morlet CWT (ω₀ = 6) on RR series linearly interpolated to 4 Hz; colour = log₁₀(power). Dashed lines mark LF boundary (0.04 Hz, indigo) and HF boundary (0.15 Hz, pink). Band powers integrated from time-averaged scalogram.
     Poincaré SD1 reflects short-term (parasympathetic) variability; SD2 reflects long-term variability.
   </div>
 </div>
@@ -3927,7 +4018,7 @@ async function copyToClipboard() {
 function initChartPlaceholders() {
     const placeholders = [
         { id: 'rollingRMSSDChart', icon: '⏱️', text: 'Chart available after 30 seconds' },
-        { id: 'psdChart',          icon: '📊', text: 'Chart available after 50 RR intervals' },
+        { id: 'psdChart',          icon: '🌊', text: 'Spectrogram available after 50 RR intervals' },
         { id: 'hrChart',           icon: '💓', text: 'Connect device to see HR data' },
         { id: 'vagalProxyChart',   icon: '🧠', text: 'Chart available after 30 seconds' },
     ];
