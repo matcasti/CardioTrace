@@ -28,9 +28,121 @@ let chartUpdateThrottle = {
     rr: 0,
     rmssd: 0,
     poincare: 0,
-    psd: 0
+    psd: 0,
+    hr: 0,
+    vagalProxy: 0
 };
 const CHART_UPDATE_INTERVAL = 100; // ms
+
+// ── App Settings ──────────────────────────────────────────────────
+const DEFAULT_SETTINGS = {
+    age: 30,
+    visibleCharts: {
+        ecg: true, rr: true, rollingRMSSD: true,
+        poincare: true, psd: true, hr: true, vagalProxy: true
+    }
+};
+let appSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+
+function loadSettings() {
+    try {
+        const saved = localStorage.getItem('cardioTraceSettings');
+        if (saved) {
+            const p = JSON.parse(saved);
+            appSettings = {
+                ...DEFAULT_SETTINGS, ...p,
+                visibleCharts: { ...DEFAULT_SETTINGS.visibleCharts, ...(p.visibleCharts || {}) }
+            };
+        }
+    } catch(e) { /* use defaults */ }
+}
+
+function saveSettings() {
+    localStorage.setItem('cardioTraceSettings', JSON.stringify(appSettings));
+}
+
+function applyChartVisibility() {
+    const map = {
+        ecg: 'ecgItem', rr: 'rrItem', rollingRMSSD: 'rollingRMSSDItem',
+        poincare: 'poincareItem', psd: 'psdItem', hr: 'hrItem', vagalProxy: 'vagalProxyItem'
+    };
+    Object.entries(map).forEach(([key, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = appSettings.visibleCharts[key] !== false ? '' : 'none';
+    });
+}
+
+function applySettings() {
+    const ageInput = document.getElementById('settingsAge');
+    if (ageInput) ageInput.value = appSettings.age;
+    ['ecg','rr','rollingRMSSD','poincare','psd','hr','vagalProxy'].forEach(key => {
+        const cb = document.getElementById(`show_${key}`);
+        if (cb) cb.checked = appSettings.visibleCharts[key] !== false;
+    });
+    applyChartVisibility();
+}
+
+// ── GridStack ─────────────────────────────────────────────────────
+let grid = null;
+const ALL_CHART_IDS = ['ecgChart','rrChart','rollingRMSSDChart','poincareChart','psdChart','hrChart','vagalProxyChart'];
+
+const DEFAULT_GRID_LAYOUT = [
+    { id: 'ecg',          x: 0,  y: 0,  w: 6,  h: 5 },
+    { id: 'rr',           x: 6,  y: 0,  w: 6,  h: 5 },
+    { id: 'rollingRMSSD', x: 0,  y: 5,  w: 6,  h: 5 },
+    { id: 'poincare',     x: 6,  y: 5,  w: 6,  h: 5 },
+    { id: 'psd',          x: 0,  y: 10, w: 12, h: 5 },
+    { id: 'hr',           x: 0,  y: 15, w: 6,  h: 5 },
+    { id: 'vagalProxy',   x: 6,  y: 15, w: 6,  h: 5 },
+];
+
+function resizeAllCharts() {
+    ALL_CHART_IDS.forEach(id => {
+        try { Plotly.Plots.resize(document.getElementById(id)); } catch(e) {}
+    });
+}
+
+function saveGridLayout() {
+    if (grid) {
+        try { localStorage.setItem('cardioTraceGridLayout', JSON.stringify(grid.save(false))); } catch(e) {}
+    }
+}
+
+function resetGridLayout() {
+    if (!grid) return;
+    localStorage.removeItem('cardioTraceGridLayout');
+    grid.load(DEFAULT_GRID_LAYOUT, true);
+    setTimeout(resizeAllCharts, 150);
+}
+
+function initGrid() {
+    if (typeof GridStack === 'undefined') {
+        console.warn('GridStack not loaded — using fallback CSS grid');
+        document.getElementById('chartsGrid').classList.add('fallback-grid');
+        return;
+    }
+    grid = GridStack.init({
+        column: 12,
+        cellHeight: 70,
+        margin: 10,
+        animate: true,
+        float: false,
+        resizable: { handles: 'e,se,s,sw,w' },
+        draggable: { handle: '.chart-title' }
+    }, '#chartsGrid');
+
+    const saved = localStorage.getItem('cardioTraceGridLayout');
+    if (saved) {
+        try { grid.load(JSON.parse(saved)); } catch(e) {}
+    }
+
+    grid.on('change resizestop dragstop', () => {
+        saveGridLayout();
+        setTimeout(resizeAllCharts, 120);
+    });
+
+    setTimeout(resizeAllCharts, 150);
+}
 let isConnected = false;
 let ecgSupported = false;
 let sessionStartTime = Date.now();
@@ -192,13 +304,16 @@ function updateChartThemes() {
         'font.color': textColor
     };
 
-    ['ecgChart', 'rrChart', 'rollingRMSSDChart', 'poincareChart', 'psdChart'].forEach(id => {
+    ['ecgChart','rrChart','rollingRMSSDChart','poincareChart','psdChart','hrChart','vagalProxyChart'].forEach(id => {
         Plotly.relayout(id, updateLayout);
     });
+    // Re-render charts that have theme-sensitive annotations
+    if (rrIntervals.length > 1) updatePoincareChart();
 }
 
 // Calculate HR zones
-function getHRZone(hr, age = 30) {
+function getHRZone(hr, age) {
+    age = age || appSettings.age || 30;
     const maxHR = 220 - age;
     const percentage = (hr / maxHR) * 100;
 
@@ -1154,6 +1269,8 @@ async function restoreSession(id) {
         updateRollingRMSSD();
         updatePoincareChart();
         updatePSDChart();
+        updateHRChart();
+        updateVagalProxyChart();
         updateSRI();
         renderAnnotations();
         renderTags();
@@ -1412,7 +1529,7 @@ const ecgLayout = {
     paper_bgcolor: 'rgba(0,0,0,0)',
     plot_bgcolor: 'rgba(0,0,0,0)',
     margin: { t: 10, r: 20, l: 50, b: 40 },
-    height: 300,
+    autosize: true,
     font: { color: chartColor, family: 'Inter, sans-serif' },
     hovermode: 'closest'
 };
@@ -1440,6 +1557,17 @@ const psdLayout = {
     yaxis: { ...ecgLayout.yaxis, title: 'Normalized Power (%)' }
 };
 
+const hrLayout = {
+    ...ecgLayout,
+    margin: { t: 30, r: 20, l: 55, b: 40 },
+    yaxis: { ...ecgLayout.yaxis, title: 'Heart Rate (bpm)', fixedrange: false }
+};
+
+const vagalProxyLayout = {
+    ...ecgLayout,
+    yaxis: { ...ecgLayout.yaxis, title: 'RMSSD / SDNN', range: [0, 2.5] }
+};
+
 Plotly.newPlot('ecgChart', [{
     x: [], y: [], type: 'scatter', mode: 'lines',
     line: { color: '#6366f1', width: 1.5 },
@@ -1458,11 +1586,22 @@ Plotly.newPlot('rollingRMSSDChart', [{
     hovertemplate: 'Time: %{x:.2f}s<br>RMSSD: %{y:.2f}ms<extra></extra>'
 }], rmssdLayout, plotConfig);
 
-Plotly.newPlot('poincareChart', [{
-    x: [], y: [], type: 'scatter', mode: 'markers',
-    marker: { color: '#a78bfa', size: 6, opacity: 0.6 },
-    hovertemplate: 'RR(n): %{x:.2f}ms<br>RR(n+1): %{y:.2f}ms<extra></extra>'
-}], poincareLayout, plotConfig);
+Plotly.newPlot('poincareChart', [
+    {
+        x: [], y: [], type: 'scatter', mode: 'markers', name: 'RR Points',
+        marker: { color: '#a78bfa', size: 5, opacity: 0.55 },
+        hovertemplate: 'RR(n): %{x:.2f}ms<br>RR(n+1): %{y:.2f}ms<extra></extra>'
+    },
+    {
+        x: [], y: [], type: 'scatter', mode: 'lines', name: 'SD Ellipse',
+        line: { color: '#22d3ee', width: 2 }, showlegend: false, hoverinfo: 'none'
+    },
+    {
+        x: [], y: [], type: 'scatter', mode: 'lines', name: 'Identity',
+        line: { color: 'rgba(156,163,175,0.35)', width: 1.5, dash: 'dash' },
+        showlegend: false, hoverinfo: 'none'
+    }
+], poincareLayout, plotConfig);
 
 Plotly.newPlot('psdChart', [{
     x: [], y: [], type: 'scatter', mode: 'lines',
@@ -1472,11 +1611,24 @@ Plotly.newPlot('psdChart', [{
     hovertemplate: 'Frequency: %{x:.2f}Hz<br>Power: %{y:.2f}%<extra></extra>'
 }], psdLayout, plotConfig);
 
-Plotly.update('ecgChart', {x: [[]], y: [[]]}, {}, [0]);
-Plotly.update('rrChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
-Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
-Plotly.update('poincareChart', {x: [[]], y: [[]]}, {}, [0]);
-Plotly.update('psdChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
+Plotly.update('ecgChart',          {x: [[]], y: [[]]},               {},                    [0]);
+Plotly.update('rrChart',           {x: [[]], y: [[]]},               {shapes:[],annotations:[]}, [0]);
+Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]},               {shapes:[],annotations:[]}, [0]);
+Plotly.update('poincareChart',     {x:[[],[],[]], y:[[],[],[]]},     {annotations:[]},      [0,1,2]);
+Plotly.update('psdChart',          {x: [[]], y: [[]]},               {shapes:[],annotations:[]}, [0]);
+
+Plotly.newPlot('hrChart', [{
+    x: [], y: [], type: 'scatter', mode: 'lines', name: 'HR',
+    line: { color: '#f43f5e', width: 2.0 },
+    hovertemplate: 'Time: %{x:.2f}s<br>HR: %{y:.1f} bpm<extra></extra>'
+}], hrLayout, plotConfig);
+
+Plotly.newPlot('vagalProxyChart', [{
+    x: [], y: [], type: 'scatter', mode: 'lines', name: 'RMSSD/SDNN',
+    line: { color: '#f59e0b', width: 2.0 },
+    fill: 'tozeroy', fillcolor: 'rgba(245,158,11,0.08)',
+    hovertemplate: 'Time: %{x:.2f}s<br>RMSSD/SDNN: %{y:.3f}<extra></extra>'
+}], vagalProxyLayout, plotConfig);
 
 // Event listeners
 connectBtn.addEventListener('click', connect);
@@ -1571,6 +1723,44 @@ tagInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') addTag();
 });
 
+// ── Settings event listeners ─────────────────────────────────────
+const settingsBtn     = document.getElementById('settingsBtn');
+const settingsPanel   = document.getElementById('settingsPanel');
+const settingsOverlay = document.getElementById('settingsOverlay');
+const settingsClose   = document.getElementById('settingsClose');
+const resetLayoutBtn  = document.getElementById('resetLayoutBtn');
+
+settingsBtn.addEventListener('click', () => {
+    applySettings();
+    settingsPanel.classList.add('active');
+    settingsOverlay.classList.add('active');
+});
+['click'].forEach(ev => settingsClose.addEventListener(ev, closeSettings));
+['click'].forEach(ev => settingsOverlay.addEventListener(ev, closeSettings));
+function closeSettings() {
+    settingsPanel.classList.remove('active');
+    settingsOverlay.classList.remove('active');
+}
+
+document.getElementById('settingsAge').addEventListener('change', (e) => {
+    appSettings.age = Math.min(100, Math.max(10, parseInt(e.target.value) || 30));
+    saveSettings();
+    updateHRZone(currentHR);
+    if (rrIntervals.length > 0) updateHRChart();
+});
+
+['ecg','rr','rollingRMSSD','poincare','psd','hr','vagalProxy'].forEach(key => {
+    const cb = document.getElementById(`show_${key}`);
+    if (cb) cb.addEventListener('change', () => {
+        appSettings.visibleCharts[key] = cb.checked;
+        saveSettings();
+        applyChartVisibility();
+        setTimeout(resizeAllCharts, 50);
+    });
+});
+
+resetLayoutBtn.addEventListener('click', resetGridLayout);
+
 eventAnnotation.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') addEventMarker();
 });
@@ -1647,8 +1837,10 @@ async function performSessionReset(showConfirm = true) {
     Plotly.update('ecgChart', {x: [[]], y: [[]]}, {}, [0]);
     Plotly.update('rrChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
     Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
-    Plotly.update('poincareChart', {x: [[]], y: [[]]}, {}, [0]);
-    Plotly.update('psdChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
+    Plotly.update('psdChart',          {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
+    Plotly.update('hrChart',           {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
+    Plotly.update('vagalProxyChart',   {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
+    Plotly.update('poincareChart',     {x:[[],[],[]], y:[[],[],[]]},   {annotations:[]},           [0,1,2]);
 
     // Reset SRI display:
     if (document.getElementById('sriGauge')) {
@@ -1865,8 +2057,10 @@ function disconnect(skipConfirm = false) {
         Plotly.update('ecgChart', {x: [[]], y: [[]]}, {}, [0]);
         Plotly.update('rrChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
         Plotly.update('rollingRMSSDChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
-        Plotly.update('poincareChart', {x: [[]], y: [[]]}, {}, [0]);
-        Plotly.update('psdChart', {x: [[]], y: [[]]}, {shapes: [], annotations: []}, [0]);
+        Plotly.update('poincareChart',   {x:[[],[],[]], y:[[],[],[]]},   {annotations:[]},           [0,1,2]);
+        Plotly.update('psdChart',        {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
+        Plotly.update('hrChart',         {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
+        Plotly.update('vagalProxyChart', {x: [[]], y: [[]]},             {shapes:[],annotations:[]}, [0]);
 
         if (document.getElementById('sriGauge')) {
             drawSRIGauge(0);
@@ -1990,12 +2184,14 @@ function handleHRData(event) {
 
         // Update stats and charts only after calibration
         if (!isCalibrating && calibrationStartTime) {
-            if (shouldUpdateChart('psd')) updatePSDChart(); // must precede updateStats/SRI
+            if (shouldUpdateChart('psd'))        updatePSDChart();
             updateStats();
             flashStatCards();
-            if (shouldUpdateChart('rr')) updateRRChart();
-            if (shouldUpdateChart('rmssd')) updateRollingRMSSD();
-            if (shouldUpdateChart('poincare')) updatePoincareChart();
+            if (shouldUpdateChart('rr'))         updateRRChart();
+            if (shouldUpdateChart('rmssd'))      updateRollingRMSSD();
+            if (shouldUpdateChart('poincare'))   updatePoincareChart();
+            if (shouldUpdateChart('hr'))         updateHRChart();
+            if (shouldUpdateChart('vagalProxy')) updateVagalProxyChart();
         }
     }
 }
@@ -2682,11 +2878,182 @@ function updateRollingRMSSD() {
 }
 
 // Update Poincaré chart
+// Update Poincaré chart with SD1/SD2 ellipse
 function updatePoincareChart() {
     if (rrIntervals.length < 2) return;
-    const rrN = rrIntervals.slice(0, -1);
+    const rrN  = rrIntervals.slice(0, -1);
     const rrN1 = rrIntervals.slice(1);
-    Plotly.update('poincareChart', { x: [rrN], y: [rrN1] }, {}, [0]);
+    const stats = computePoincareStats(rrIntervals);
+
+    let ellipse = { x: [], y: [] };
+    let identX  = [], identY  = [];
+    let annotations = [];
+
+    if (stats && stats.sd1 > 0) {
+        ellipse = generateEllipseTrace(stats.meanRR, stats.meanRR, stats.sd1, stats.sd2);
+        const allRR = [...rrN, ...rrN1];
+        const lo = Math.min(...allRR), hi = Math.max(...allRR);
+        identX = [lo, hi]; identY = [lo, hi];
+
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        annotations = [{
+            xref: 'paper', yref: 'paper', x: 0.98, y: 0.98,
+            xanchor: 'right', yanchor: 'top',
+            text: `<b>SD1</b> ${stats.sd1} ms<br><b>SD2</b> ${stats.sd2} ms<br><b>SD1/SD2</b> ${stats.ratio}`,
+            showarrow: false,
+            font: { size: 11, color: isLight ? '#4b5563' : '#9ca3af' },
+            bgcolor: isLight ? 'rgba(249,250,251,0.92)' : 'rgba(17,24,39,0.8)',
+            bordercolor: 'rgba(99,102,241,0.3)',
+            borderpad: 6, borderwidth: 1, align: 'right'
+        }];
+    }
+
+    Plotly.update('poincareChart',
+        { x: [rrN, ellipse.x, identX], y: [rrN1, ellipse.y, identY] },
+        { annotations },
+        [0, 1, 2]
+    );
+}
+
+// ── Poincaré SD1/SD2 ─────────────────────────────────────────────
+function computePoincareStats(rr) {
+    if (rr.length < 2) return null;
+    const n = rr.length;
+    const mean = rr.reduce((a, b) => a + b) / n;
+    const sdnn = Math.sqrt(rr.reduce((s, v) => s + (v - mean) ** 2, 0) / n);
+    let sqd = 0;
+    for (let i = 1; i < n; i++) sqd += (rr[i] - rr[i-1]) ** 2;
+    const rmssdVal = Math.sqrt(sqd / (n - 1));
+    const sd1 = rmssdVal / Math.SQRT2;
+    const sd2Sq = Math.max(0, 2 * sdnn ** 2 - 0.5 * rmssdVal ** 2);
+    const sd2 = Math.sqrt(sd2Sq);
+    return {
+        sd1: Math.round(sd1 * 10) / 10,
+        sd2: Math.round(sd2 * 10) / 10,
+        ratio: sd2 > 0 ? Math.round(sd1 / sd2 * 1000) / 1000 : 0,
+        meanRR: Math.round(mean * 10) / 10
+    };
+}
+
+function generateEllipseTrace(cx, cy, sd1, sd2, numPoints = 72) {
+    const x = [], y = [], c45 = Math.SQRT1_2;
+    for (let i = 0; i <= numPoints; i++) {
+        const t = (2 * Math.PI * i) / numPoints;
+        const xr = sd2 * Math.cos(t), yr = sd1 * Math.sin(t);
+        x.push(cx + c45 * (xr - yr));
+        y.push(cy + c45 * (xr + yr));
+    }
+    return { x, y };
+}
+
+// ── HR Chart with Zones ──────────────────────────────────────────
+function updateHRChart() {
+    const el = document.getElementById('hrChart');
+    if (!el) return;
+
+    const age = appSettings.age || 30;
+    const maxHR = 220 - age;
+    const zonePcts  = [0, 0.60, 0.70, 0.80, 0.90, 1.10];
+    const zoneBPMs  = zonePcts.map(p => p * maxHR);
+    const zoneColors = [
+        'rgba(107,114,128,0.10)', 'rgba(59,130,246,0.10)',
+        'rgba(16,185,129,0.10)',  'rgba(245,158,11,0.10)',
+        'rgba(239,68,68,0.10)'
+    ];
+    const zoneNames  = ['Z1 Recovery','Z2 Endurance','Z3 Tempo','Z4 Threshold','Z5 Max'];
+
+    const hrTimes  = timestamps.map(t => t);
+    const hrValues = rrIntervals.map(rr => Math.round(60000 / rr * 10) / 10);
+
+    let placeholder = el.querySelector('.chart-placeholder');
+    if (hrTimes.length === 0) {
+        if (!placeholder) {
+            placeholder = document.createElement('div');
+            placeholder.className = 'chart-placeholder';
+            placeholder.innerHTML = `<div class="chart-placeholder-icon">💓</div>
+                <div class="chart-placeholder-text">Connect device to see HR data</div>`;
+            el.appendChild(placeholder);
+        }
+        el.classList.add('chart-blurred');
+        return;
+    }
+    if (placeholder) placeholder.remove();
+    el.classList.remove('chart-blurred');
+
+    const shapes = zoneBPMs.slice(0,5).map((low, i) => ({
+        type: 'rect', xref: 'paper', yref: 'y',
+        x0: 0, x1: 1, y0: low, y1: zoneBPMs[i+1],
+        fillcolor: zoneColors[i], line: { width: 0 }, layer: 'below'
+    }));
+
+    const annotations = zoneNames.map((name, i) => ({
+        xref: 'paper', yref: 'y',
+        x: 0.005, y: (zoneBPMs[i] + zoneBPMs[i+1]) / 2,
+        text: name, showarrow: false,
+        font: { size: 10, color: 'rgba(156,163,175,0.65)' }, xanchor: 'left'
+    }));
+
+    Plotly.update('hrChart', { x: [hrTimes], y: [hrValues] }, { shapes, annotations }, [0]);
+}
+
+// ── Vagal Proxy Chart ────────────────────────────────────────────
+function computeVagalProxy() {
+    const n = rrIntervals.length;
+    if (n < 10) return { times: [], values: [] };
+    const windowDuration = 60;
+    const stride = Math.max(1, Math.floor(n / 300));
+    const times = [], values = [];
+    for (let i = stride; i < n; i += stride) {
+        const cur = timestamps[i];
+        if (cur < 30) continue;
+        const ws = cur - windowDuration;
+        let lo = 0, hi = i;
+        while (lo < hi) { const mid = (lo+hi)>>1; if (timestamps[mid] < ws) lo=mid+1; else hi=mid; }
+        const w = rrIntervals.slice(lo, i + 1);
+        if (w.length < 5) continue;
+        const mean = w.reduce((a,b)=>a+b) / w.length;
+        const sdnn = Math.sqrt(w.reduce((s,v)=>s+(v-mean)**2, 0) / w.length);
+        if (sdnn <= 0) continue;
+        let ss = 0;
+        for (let j = 1; j < w.length; j++) ss += (w[j]-w[j-1])**2;
+        const rmssd = Math.sqrt(ss / (w.length - 1));
+        times.push(cur);
+        values.push(rmssd / sdnn);
+    }
+    return { times, values };
+}
+
+function updateVagalProxyChart() {
+    const el = document.getElementById('vagalProxyChart');
+    if (!el) return;
+    let placeholder = el.querySelector('.chart-placeholder');
+    const { times, values } = computeVagalProxy();
+    if (values.length === 0) {
+        if (!placeholder) {
+            placeholder = document.createElement('div');
+            placeholder.className = 'chart-placeholder';
+            placeholder.innerHTML = `<div class="chart-placeholder-icon">🧠</div>
+                <div class="chart-placeholder-text">Chart available after 30 seconds</div>`;
+            el.appendChild(placeholder);
+        }
+        el.classList.add('chart-blurred');
+        return;
+    }
+    if (placeholder) placeholder.remove();
+    el.classList.remove('chart-blurred');
+
+    const shapes = [{
+        type: 'line', xref: 'paper', yref: 'y',
+        x0: 0, x1: 1, y0: 0.5, y1: 0.5,
+        line: { color: 'rgba(245,158,11,0.5)', width: 1, dash: 'dot' }
+    }];
+    const annotations = [{
+        xref: 'paper', yref: 'y', x: 0.99, y: 0.5,
+        text: 'Balanced (0.5)', showarrow: false,
+        font: { size: 10, color: 'rgba(245,158,11,0.7)' },
+        xanchor: 'right', yanchor: 'bottom'
+    }];
+    Plotly.update('vagalProxyChart', { x: [times], y: [values] }, { shapes, annotations }, [0]);
 }
 
 function generateMetadataHeader(sessionData) {
@@ -2756,14 +3123,23 @@ async function generatePDFReport() {
     try {
         // ── Capture chart images ─────────────────────────────────────────────
         const scale = 2;
-        const [imgPSD, imgPoincare, imgRR, imgRMSSD] = await Promise.all([
+        const [imgPSD, imgPoincare, imgRR, imgRMSSD, imgHR, imgVagal] = await Promise.all([
             Plotly.toImage('psdChart',          { format: 'png', width: 1100, height: 420, scale }),
             Plotly.toImage('poincareChart',     { format: 'png', width:  700, height: 600, scale }),
             Plotly.toImage('rrChart',           { format: 'png', width: 1100, height: 380, scale }),
             rollingRMSSD.length > 0
                 ? Plotly.toImage('rollingRMSSDChart', { format: 'png', width: 1100, height: 380, scale })
-                : Promise.resolve(null)
+                : Promise.resolve(null),
+            rrIntervals.length > 0
+                ? Plotly.toImage('hrChart',     { format: 'png', width: 1100, height: 380, scale })
+                : Promise.resolve(null),
+            rrIntervals.length > 0
+                ? Plotly.toImage('vagalProxyChart', { format: 'png', width: 1100, height: 380, scale })
+                : Promise.resolve(null),
         ]);
+
+        // Compute Poincaré stats for report
+        const poincStats = computePoincareStats(rrIntervals);
 
         // ── Compute metrics ──────────────────────────────────────────────────
         const sessionDate  = new Date(calibrationStartTime || sessionStartTime);
@@ -3099,14 +3475,32 @@ ${sriResult ? (() => {
     <div class="chart-card">
       <div class="chart-card-label">Poincaré Plot — RR(n) vs RR(n+1)</div>
       <img src="${imgPoincare}" alt="Poincaré plot">
+      ${poincStats ? `<div style="padding:8px 14px;font-size:11px;color:var(--ink3);border-top:1px solid var(--border);display:flex;gap:24px;">
+        <span><strong style="color:var(--accent)">SD1</strong> ${poincStats.sd1} ms</span>
+        <span><strong style="color:var(--accent)">SD2</strong> ${poincStats.sd2} ms</span>
+        <span><strong style="color:var(--accent)">SD1/SD2</strong> ${poincStats.ratio}</span>
+      </div>` : ''}
     </div>
   </div>
   <div class="note">
     <strong>Band legend:</strong> VLF 0.003–0.04 Hz · LF 0.04–0.15 Hz · HF 0.15–0.4 Hz.
     PSD computed via Lomb-Scargle periodogram on unevenly-sampled RR series, normalised so ∫PSD·df = signal variance.
-    Poincaré ellipse elongation (SD2/SD1) reflects long-term vs short-term variability balance.
+    Poincaré SD1 reflects short-term (parasympathetic) variability; SD2 reflects long-term variability.
   </div>
 </div>
+
+<!-- ── HR + VAGAL PROXY ────────────────────────────────────────── -->
+${(imgHR || imgVagal) ? `<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Heart Rate & Vagal Proxy</span></div>
+  ${imgHR ? `<div class="chart-card" style="margin-bottom:14px;">
+    <div class="chart-card-label">Heart Rate over Time with Training Zones (Age ${appSettings.age}, Max HR ${220-appSettings.age} bpm)</div>
+    <img src="${imgHR}" alt="Heart Rate chart">
+  </div>` : ''}
+  ${imgVagal ? `<div class="chart-card">
+    <div class="chart-card-label">Vagal Proxy (RMSSD/SDNN) — 1-minute rolling window · Values > 0.5 favour parasympathetic dominance</div>
+    <img src="${imgVagal}" alt="Vagal Proxy chart">
+  </div>` : ''}
+</div>` : ''}
 
 <!-- ── SRI BREAKDOWN ─────────────────────────────────────────────────── -->
 ${sriResult ? `<div class="sec">
@@ -3426,14 +3820,14 @@ async function copyToClipboard() {
 // Initialize on page load
 (async () => {
     try {
+        loadSettings();
         await initDB();
         await updateHistoryBadge();
         loadTheme();
-
-        // Show initial placeholders on all charts
         initChartPlaceholders();
+        applySettings();
+        initGrid();
 
-        // Initialize SRI gauge
         if (document.getElementById('sriGauge')) {
             drawSRIGauge(0);
             updateSRI();
@@ -3448,29 +3842,21 @@ async function copyToClipboard() {
 
 // Initialize chart placeholders
 function initChartPlaceholders() {
-    // Rolling RMSSD placeholder
-    const rmssdChart = document.getElementById('rollingRMSSDChart');
-    if (!rmssdChart.querySelector('.chart-placeholder')) {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'chart-placeholder';
-        placeholder.innerHTML = `
-            <div class="chart-placeholder-icon">⏱️</div>
-            <div class="chart-placeholder-text">Chart available after 30 seconds</div>
-        `;
-        rmssdChart.appendChild(placeholder);
-        rmssdChart.classList.add('chart-blurred');
-    }
-
-    // PSD placeholder
-    const psdChart = document.getElementById('psdChart');
-    if (!psdChart.querySelector('.chart-placeholder')) {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'chart-placeholder';
-        placeholder.innerHTML = `
-            <div class="chart-placeholder-icon">📊</div>
-            <div class="chart-placeholder-text">Chart available after 50 RR intervals</div>
-        `;
-        psdChart.appendChild(placeholder);
-        psdChart.classList.add('chart-blurred');
-    }
+    const placeholders = [
+        { id: 'rollingRMSSDChart', icon: '⏱️', text: 'Chart available after 30 seconds' },
+        { id: 'psdChart',          icon: '📊', text: 'Chart available after 50 RR intervals' },
+        { id: 'hrChart',           icon: '💓', text: 'Connect device to see HR data' },
+        { id: 'vagalProxyChart',   icon: '🧠', text: 'Chart available after 30 seconds' },
+    ];
+    placeholders.forEach(({ id, icon, text }) => {
+        const el = document.getElementById(id);
+        if (el && !el.querySelector('.chart-placeholder')) {
+            const ph = document.createElement('div');
+            ph.className = 'chart-placeholder';
+            ph.innerHTML = `<div class="chart-placeholder-icon">${icon}</div>
+                            <div class="chart-placeholder-text">${text}</div>`;
+            el.appendChild(ph);
+            el.classList.add('chart-blurred');
+        }
+    });
 }

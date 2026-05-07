@@ -778,21 +778,61 @@ select:focus {
     margin-left: 6px;
 }
 
-.charts-grid {
+/* GridStack integration */
+.grid-stack {
+    margin-bottom: 24px;
+    background: transparent;
+}
+
+.grid-stack-item-content {
+    border-radius: 24px !important;
+    overflow: hidden !important;
+    inset: 6px !important;
+}
+
+.grid-stack-item-content .chart-container {
+    position: absolute;
+    inset: 0;
+    border-radius: 20px;
+    display: flex;
+    flex-direction: column;
+    padding: clamp(14px, 2vw, 24px);
+    overflow: hidden;
+}
+
+.gs-chart-div {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+}
+
+.chart-title {
+    cursor: grab;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.chart-title:active {
+    cursor: grabbing;
+}
+
+/* Fallback when GridStack unavailable */
+.grid-stack.fallback-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
     gap: 20px;
-    margin-bottom: 24px;
 }
 
-.chart-container.full-width {
-    grid-column: 1 / -1;
+.grid-stack.fallback-grid .grid-stack-item {
+    position: relative !important;
+    width: 100% !important;
+    transform: none !important;
 }
 
-@media (min-width: 2000px) {
-  .charts-grid {
-        grid-template-columns: repeat(4, 1fr);
-    }
+.grid-stack.fallback-grid .grid-stack-item-content {
+    position: relative !important;
+    inset: 0 !important;
+    height: 380px;
 }
 
 .chart-container {
@@ -1443,6 +1483,69 @@ select:focus {
     opacity: 1;
 }
 
+/* ── Settings Panel ─────────────────────────────────────────────── */
+.settings-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.settings-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    padding-top: 6px;
+    min-width: 100px;
+}
+
+.settings-control {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.settings-hint {
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+.settings-chart-toggles {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.settings-toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-secondary);
+    transition: background 0.2s ease;
+}
+
+.settings-toggle-row:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.settings-toggle-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────── */
 .footer {
     text-align: center;
     margin-top: 40px;
@@ -1470,10 +1573,6 @@ select:focus {
     }
 
     .controls {
-        grid-template-columns: 1fr;
-    }
-
-    .charts-grid {
         grid-template-columns: 1fr;
     }
 

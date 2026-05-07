@@ -6,6 +6,7 @@
     <title>CardioTrace</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/gridstack.js/10.3.1/gridstack.min.css">
 </head>
 <body>
     <div class="noise"></div>
@@ -14,6 +15,7 @@
             <h1>❤️ CardioTrace</h1>
             <p>Real-time Heart Rate Variability Analysis</p>
             <div class="header-controls">
+                <button class="icon-btn" id="settingsBtn" title="Settings">⚙️</button>
                 <button class="icon-btn" id="themeToggle" title="Toggle Theme">🌓</button>
                 <button class="cinema-toggle" id="cinemaToggle">
                     <span id="cinemaIcon">🎬</span>
@@ -157,6 +159,39 @@
         </div>
 
         <div class="modal-overlay" id="eventTypeOverlay"></div>
+
+        <!-- Settings Modal -->
+        <div class="modal-overlay" id="settingsOverlay"></div>
+        <div class="modal-panel" id="settingsPanel">
+            <div class="modal-header">
+                <h2>⚙️ Settings</h2>
+                <button class="modal-close" id="settingsClose">✕</button>
+            </div>
+            <div class="modal-content">
+                <div class="section-title">Heart Rate Zones</div>
+                <div class="settings-row">
+                    <div class="settings-label">Your Age</div>
+                    <div class="settings-control">
+                        <input type="number" id="settingsAge" min="10" max="100" value="30" style="max-width:120px; min-width:0;">
+                        <div class="settings-hint">Max HR = 220 − age</div>
+                    </div>
+                </div>
+
+                <div class="section-title" style="margin-top:20px;">Visible Charts</div>
+                <div class="settings-chart-toggles">
+                    <label class="settings-toggle-row"><input type="checkbox" id="show_ecg" checked> ECG Signal</label>
+                    <label class="settings-toggle-row"><input type="checkbox" id="show_rr" checked> RR Intervals</label>
+                    <label class="settings-toggle-row"><input type="checkbox" id="show_rollingRMSSD" checked> Rolling RMSSD</label>
+                    <label class="settings-toggle-row"><input type="checkbox" id="show_poincare" checked> Poincaré Plot</label>
+                    <label class="settings-toggle-row"><input type="checkbox" id="show_psd" checked> Power Spectral Density</label>
+                    <label class="settings-toggle-row"><input type="checkbox" id="show_hr" checked> Heart Rate + Zones</label>
+                    <label class="settings-toggle-row"><input type="checkbox" id="show_vagalProxy" checked> Vagal Proxy (RMSSD/SDNN)</label>
+                </div>
+
+                <div class="section-title" style="margin-top:20px;">Chart Layout</div>
+                <button class="btn btn-secondary" id="resetLayoutBtn" style="width:100%;margin-top:8px;">↺ Reset Layout to Default</button>
+            </div>
+        </div>
 
         <div class="controls" id="controlsPanel">
             <!-- Connection Section -->
@@ -401,26 +436,62 @@
             </div>
         </div>
 
-        <div class="charts-grid">
-            <div class="chart-container">
-                <div class="chart-title">ECG Signal</div>
-                <div id="ecgChart"></div>
+        <div class="grid-stack" id="chartsGrid">
+            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="0" gs-id="ecg" id="ecgItem">
+                <div class="grid-stack-item-content">
+                    <div class="chart-container">
+                        <div class="chart-title">ECG Signal</div>
+                        <div id="ecgChart" class="gs-chart-div"></div>
+                    </div>
+                </div>
             </div>
-            <div class="chart-container">
-                <div class="chart-title">RR Intervals</div>
-                <div id="rrChart"></div>
+            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="0" gs-id="rr" id="rrItem">
+                <div class="grid-stack-item-content">
+                    <div class="chart-container">
+                        <div class="chart-title">RR Intervals</div>
+                        <div id="rrChart" class="gs-chart-div"></div>
+                    </div>
+                </div>
             </div>
-            <div class="chart-container">
-                <div class="chart-title">Rolling RMSSD (1 min)</div>
-                <div id="rollingRMSSDChart"></div>
+            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="5" gs-id="rollingRMSSD" id="rollingRMSSDItem">
+                <div class="grid-stack-item-content">
+                    <div class="chart-container">
+                        <div class="chart-title">Rolling RMSSD (1 min)</div>
+                        <div id="rollingRMSSDChart" class="gs-chart-div"></div>
+                    </div>
+                </div>
             </div>
-            <div class="chart-container">
-                <div class="chart-title">Poincaré Plot</div>
-                <div id="poincareChart"></div>
+            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="5" gs-id="poincare" id="poincareItem">
+                <div class="grid-stack-item-content">
+                    <div class="chart-container">
+                        <div class="chart-title">Poincaré Plot</div>
+                        <div id="poincareChart" class="gs-chart-div"></div>
+                    </div>
+                </div>
             </div>
-            <div class="chart-container full-width">
-                <div class="chart-title">Power Spectral Density</div>
-                <div id="psdChart"></div>
+            <div class="grid-stack-item" gs-w="12" gs-h="5" gs-x="0" gs-y="10" gs-id="psd" id="psdItem">
+                <div class="grid-stack-item-content">
+                    <div class="chart-container">
+                        <div class="chart-title">Power Spectral Density</div>
+                        <div id="psdChart" class="gs-chart-div"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="15" gs-id="hr" id="hrItem">
+                <div class="grid-stack-item-content">
+                    <div class="chart-container">
+                        <div class="chart-title">Heart Rate + Zones</div>
+                        <div id="hrChart" class="gs-chart-div"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="15" gs-id="vagalProxy" id="vagalProxyItem">
+                <div class="grid-stack-item-content">
+                    <div class="chart-container">
+                        <div class="chart-title">Vagal Proxy (RMSSD/SDNN)</div>
+                        <div id="vagalProxyChart" class="gs-chart-div"></div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -429,6 +500,7 @@
         </div>
     </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gridstack.js/10.3.1/gridstack.min.js"></script>
     <script src="engine.js"></script>
 </body>
 </html>
