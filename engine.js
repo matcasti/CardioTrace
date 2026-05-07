@@ -37,6 +37,10 @@ const CHART_UPDATE_INTERVAL = 100; // ms
 // ── App Settings ──────────────────────────────────────────────────
 const DEFAULT_SETTINGS = {
     age: 30,
+    calibrationSecs: 8,
+    autosaveSecs: 10,
+    rmssdWindow: 60,
+    artifactThreshold: 300,
     visibleCharts: {
         ecg: true, rr: true, rollingRMSSD: true,
         poincare: true, psd: true, hr: true, vagalProxy: true
@@ -73,8 +77,41 @@ function applyChartVisibility() {
 }
 
 function applySettings() {
-    const ageInput = document.getElementById('settingsAge');
-    if (ageInput) ageInput.value = appSettings.age;
+    // Age
+    const ageSlider = document.getElementById('settingsAge');
+    if (ageSlider) {
+        ageSlider.value = appSettings.age;
+        const d = document.getElementById('settingsAgeVal');
+        if (d) d.textContent = `${appSettings.age} yrs`;
+        const p = document.getElementById('maxHRPreview');
+        if (p) p.textContent = `Max HR: ${220 - appSettings.age} bpm · Zones recalculated live`;
+    }
+    // Calibration
+    const calibSlider = document.getElementById('settingsCalib');
+    if (calibSlider) {
+        calibSlider.value = appSettings.calibrationSecs;
+        const d = document.getElementById('settingsCalibVal');
+        if (d) d.textContent = `${appSettings.calibrationSecs} s`;
+    }
+    // Autosave
+    const autosaveSlider = document.getElementById('settingsAutosave');
+    if (autosaveSlider) {
+        autosaveSlider.value = appSettings.autosaveSecs;
+        const d = document.getElementById('settingsAutosaveVal');
+        if (d) d.textContent = `${appSettings.autosaveSecs} s`;
+    }
+    // RMSSD window
+    const rmssdSlider = document.getElementById('settingsRMSSDWindow');
+    if (rmssdSlider) {
+        rmssdSlider.value = appSettings.rmssdWindow;
+        const d = document.getElementById('settingsRMSSDWindowVal');
+        if (d) d.textContent = `${appSettings.rmssdWindow} s`;
+    }
+    // Artifact chips
+    document.querySelectorAll('#artifactGroup .sett-chip').forEach(btn => {
+        btn.classList.toggle('active', parseInt(btn.dataset.val) === appSettings.artifactThreshold);
+    });
+    // Chart toggles
     ['ecg','rr','rollingRMSSD','poincare','psd','hr','vagalProxy'].forEach(key => {
         const cb = document.getElementById(`show_${key}`);
         if (cb) cb.checked = appSettings.visibleCharts[key] !== false;
@@ -401,7 +438,7 @@ function cleanRRData(rrIntervals, timestamps) {
     // Define physiological limits (ms) - MUST MATCH isValidRRInterval
     const minRR = 250;  // 200 BPM max
     const maxRR = 2000; // 30 BPM min
-    const maxDiff = 300; // Max change between consecutive RR intervals (ms)
+    const maxDiff = appSettings.artifactThreshold || 300;
 
     for (let i = 0; i < rrIntervals.length; i++) {
         const rr = rrIntervals[i];
@@ -958,7 +995,7 @@ async function autoSaveSession() {
 // Start auto-save
 function startAutoSave() {
     if (autoSaveInterval) clearInterval(autoSaveInterval);
-    autoSaveInterval = setInterval(autoSaveSession, 10000);
+    autoSaveInterval = setInterval(autoSaveSession, (appSettings.autosaveSecs || 10) * 1000);
     console.log('✓ Auto-save enabled');
 }
 
@@ -1560,12 +1597,12 @@ const psdLayout = {
 const hrLayout = {
     ...ecgLayout,
     margin: { t: 30, r: 20, l: 55, b: 40 },
-    yaxis: { ...ecgLayout.yaxis, title: 'Heart Rate (bpm)', fixedrange: false }
+    yaxis: { ...ecgLayout.yaxis, title: 'Heart Rate (bpm)'}
 };
 
 const vagalProxyLayout = {
     ...ecgLayout,
-    yaxis: { ...ecgLayout.yaxis, title: 'RMSSD / SDNN', range: [0, 2.5] }
+    yaxis: { ...ecgLayout.yaxis, title: 'RMSSD / SDNN', range: [0, 1] }
 };
 
 Plotly.newPlot('ecgChart', [{
@@ -1735,20 +1772,66 @@ settingsBtn.addEventListener('click', () => {
     settingsPanel.classList.add('active');
     settingsOverlay.classList.add('active');
 });
-['click'].forEach(ev => settingsClose.addEventListener(ev, closeSettings));
-['click'].forEach(ev => settingsOverlay.addEventListener(ev, closeSettings));
+settingsClose.addEventListener('click', closeSettings);
+settingsOverlay.addEventListener('click', closeSettings);
 function closeSettings() {
     settingsPanel.classList.remove('active');
     settingsOverlay.classList.remove('active');
 }
 
-document.getElementById('settingsAge').addEventListener('change', (e) => {
-    appSettings.age = Math.min(100, Math.max(10, parseInt(e.target.value) || 30));
+// Age slider
+document.getElementById('settingsAge').addEventListener('input', (e) => {
+    const age = Math.min(100, Math.max(10, parseInt(e.target.value) || 30));
+    appSettings.age = age;
+    const d = document.getElementById('settingsAgeVal');
+    if (d) d.textContent = `${age} yrs`;
+    const p = document.getElementById('maxHRPreview');
+    if (p) p.textContent = `Max HR: ${220 - age} bpm · Zones recalculated live`;
     saveSettings();
     updateHRZone(currentHR);
     if (rrIntervals.length > 0) updateHRChart();
 });
 
+// Calibration slider
+document.getElementById('settingsCalib').addEventListener('input', (e) => {
+    const val = parseInt(e.target.value);
+    appSettings.calibrationSecs = val;
+    const d = document.getElementById('settingsCalibVal');
+    if (d) d.textContent = `${val} s`;
+    saveSettings();
+});
+
+// Autosave slider
+document.getElementById('settingsAutosave').addEventListener('input', (e) => {
+    const val = parseInt(e.target.value);
+    appSettings.autosaveSecs = val;
+    const d = document.getElementById('settingsAutosaveVal');
+    if (d) d.textContent = `${val} s`;
+    saveSettings();
+    if (isConnected) { stopAutoSave(); startAutoSave(); }
+});
+
+// RMSSD window slider
+document.getElementById('settingsRMSSDWindow').addEventListener('input', (e) => {
+    const val = parseInt(e.target.value);
+    appSettings.rmssdWindow = val;
+    const d = document.getElementById('settingsRMSSDWindowVal');
+    if (d) d.textContent = `${val} s`;
+    saveSettings();
+    if (rrIntervals.length > 0) { updateRollingRMSSD(); updateVagalProxyChart(); }
+});
+
+// Artifact rejection chips
+document.querySelectorAll('#artifactGroup .sett-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+        appSettings.artifactThreshold = parseInt(btn.dataset.val);
+        document.querySelectorAll('#artifactGroup .sett-chip').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        saveSettings();
+    });
+});
+
+// Chart visibility checkboxes
 ['ecg','rr','rollingRMSSD','poincare','psd','hr','vagalProxy'].forEach(key => {
     const cb = document.getElementById(`show_${key}`);
     if (cb) cb.addEventListener('change', () => {
@@ -1943,7 +2026,7 @@ async function connect() {
 
         // Start calibration period
         isCalibrating = true;
-        calibrationEndTime = Date.now() + CALIBRATION_DURATION;
+        calibrationEndTime = Date.now() + (appSettings.calibrationSecs || 8) * 1000;
         calibrationStartTime = null; // Reset
         status.textContent = 'Calibrating...';
         status.classList.add('calibrating');
@@ -1958,7 +2041,7 @@ async function connect() {
                 console.log('✓ Calibration complete - recording started');
                 status.classList.add('connected');
             }
-        }, CALIBRATION_DURATION);
+        }, (appSettings.calibrationSecs || 8) * 1000);
 
         startRecordingTimer();
         startAutoSave();
@@ -2200,7 +2283,7 @@ function handleHRData(event) {
 function isValidRRInterval(rr, lastRR = null) {
     const minRR = 250;  // 200 BPM max
     const maxRR = 2000; // 30 BPM min
-    const maxDiff = 300; // Max change between consecutive RR intervals (ms)
+    const maxDiff = appSettings.artifactThreshold || 300;
 
     // Check physiological validity
     if (rr < minRR || rr > maxRR) return false;
@@ -2798,7 +2881,7 @@ function updateRRChartWithMarkers() {
 function updateRollingRMSSD() {
     if (rrIntervals.length < 2) return;
 
-    const windowDuration = 60;
+    const windowDuration = appSettings.rmssdWindow || 60;
     rollingRMSSD = [];
     rollingRMSSDTimes = [];
 
@@ -3000,7 +3083,7 @@ function updateHRChart() {
 function computeVagalProxy() {
     const n = rrIntervals.length;
     if (n < 10) return { times: [], values: [] };
-    const windowDuration = 60;
+    const windowDuration = appSettings.rmssdWindow || 60;
     const stride = Math.max(1, Math.floor(n / 300));
     const times = [], values = [];
     for (let i = stride; i < n; i += stride) {

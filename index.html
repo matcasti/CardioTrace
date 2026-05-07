@@ -6,7 +6,7 @@
     <title>CardioTrace</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/gridstack.js/10.3.1/gridstack.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@8.4.0/dist/gridstack.min.css">
 </head>
 <body>
     <div class="noise"></div>
@@ -168,30 +168,164 @@
                 <button class="modal-close" id="settingsClose">✕</button>
             </div>
             <div class="modal-content">
-                <div class="section-title">Heart Rate Zones</div>
-                <div class="settings-row">
-                    <div class="settings-label">Your Age</div>
-                    <div class="settings-control">
-                        <input type="number" id="settingsAge" min="10" max="100" value="30" style="max-width:120px; min-width:0;">
-                        <div class="settings-hint">Max HR = 220 − age</div>
+
+                <!-- ── Profile ── -->
+                <div class="sett-section">
+                    <div class="sett-section-head"><span class="sett-section-icon">👤</span>Profile</div>
+                    <div class="sett-card">
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info">
+                                <span class="sett-row-label">Age</span>
+                                <span class="sett-row-sub">Used for max HR and training zone boundaries</span>
+                            </div>
+                            <input type="range" id="settingsAge" min="10" max="100" value="30" class="sett-slider">
+                            <div class="sett-slider-labels">
+                                <span>10</span>
+                                <span id="settingsAgeVal" class="sett-slider-current">30 yrs</span>
+                                <span>100</span>
+                            </div>
+                            <div class="sett-derived" id="maxHRPreview">Max HR: 190 bpm · Zones recalculated live</div>
+                        </div>
                     </div>
                 </div>
 
-                <div class="section-title" style="margin-top:20px;">Visible Charts</div>
-                <div class="settings-chart-toggles">
-                    <label class="settings-toggle-row"><input type="checkbox" id="show_ecg" checked> ECG Signal</label>
-                    <label class="settings-toggle-row"><input type="checkbox" id="show_rr" checked> RR Intervals</label>
-                    <label class="settings-toggle-row"><input type="checkbox" id="show_rollingRMSSD" checked> Rolling RMSSD</label>
-                    <label class="settings-toggle-row"><input type="checkbox" id="show_poincare" checked> Poincaré Plot</label>
-                    <label class="settings-toggle-row"><input type="checkbox" id="show_psd" checked> Power Spectral Density</label>
-                    <label class="settings-toggle-row"><input type="checkbox" id="show_hr" checked> Heart Rate + Zones</label>
-                    <label class="settings-toggle-row"><input type="checkbox" id="show_vagalProxy" checked> Vagal Proxy (RMSSD/SDNN)</label>
+                <!-- ── Recording ── -->
+                <div class="sett-section">
+                    <div class="sett-section-head"><span class="sett-section-icon">🎙️</span>Recording</div>
+                    <div class="sett-card">
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info">
+                                <span class="sett-row-label">Calibration Period</span>
+                                <span class="sett-row-sub">Warm-up time discarded after connecting device</span>
+                            </div>
+                            <input type="range" id="settingsCalib" min="5" max="30" step="1" value="8" class="sett-slider">
+                            <div class="sett-slider-labels">
+                                <span>5 s</span>
+                                <span id="settingsCalibVal" class="sett-slider-current">8 s</span>
+                                <span>30 s</span>
+                            </div>
+                        </div>
+                        <div class="sett-divider"></div>
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info">
+                                <span class="sett-row-label">Auto-save Interval</span>
+                                <span class="sett-row-sub">How often live data is written to history</span>
+                            </div>
+                            <input type="range" id="settingsAutosave" min="10" max="120" step="10" value="10" class="sett-slider">
+                            <div class="sett-slider-labels">
+                                <span>10 s</span>
+                                <span id="settingsAutosaveVal" class="sett-slider-current">10 s</span>
+                                <span>120 s</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="section-title" style="margin-top:20px;">Chart Layout</div>
-                <button class="btn btn-secondary" id="resetLayoutBtn" style="width:100%;margin-top:8px;">↺ Reset Layout to Default</button>
-            </div>
-        </div>
+                <!-- ── HRV Analysis ── -->
+                <div class="sett-section">
+                    <div class="sett-section-head"><span class="sett-section-icon">📊</span>HRV Analysis</div>
+                    <div class="sett-card">
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info">
+                                <span class="sett-row-label">Rolling Window</span>
+                                <span class="sett-row-sub">Duration for RMSSD and Vagal Proxy rolling calculations</span>
+                            </div>
+                            <input type="range" id="settingsRMSSDWindow" min="30" max="300" step="30" value="60" class="sett-slider">
+                            <div class="sett-slider-labels">
+                                <span>30 s</span>
+                                <span id="settingsRMSSDWindowVal" class="sett-slider-current">60 s</span>
+                                <span>300 s</span>
+                            </div>
+                        </div>
+                        <div class="sett-divider"></div>
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info">
+                                <span class="sett-row-label">Artifact Rejection</span>
+                                <span class="sett-row-sub">Max allowed Δ between consecutive RR intervals</span>
+                            </div>
+                            <div class="sett-chip-group" id="artifactGroup">
+                                <button class="sett-chip" data-val="150">Strict<span>≤ 150 ms</span></button>
+                                <button class="sett-chip active" data-val="300">Moderate<span>≤ 300 ms</span></button>
+                                <button class="sett-chip" data-val="500">Loose<span>≤ 500 ms</span></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── Visible Charts ── -->
+                <div class="sett-section">
+                    <div class="sett-section-head"><span class="sett-section-icon">📈</span>Visible Charts</div>
+                    <div class="sett-card sett-toggles">
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-icon">🫀</div>
+                            <div class="sett-toggle-info">
+                                <span>ECG Signal</span>
+                                <span>Raw electrode waveform</span>
+                            </div>
+                            <input type="checkbox" id="show_ecg" checked class="sett-checkbox">
+                        </label>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-icon">📈</div>
+                            <div class="sett-toggle-info">
+                                <span>RR Intervals</span>
+                                <span>Beat-to-beat interval time series</span>
+                            </div>
+                            <input type="checkbox" id="show_rr" checked class="sett-checkbox">
+                        </label>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-icon">〰️</div>
+                            <div class="sett-toggle-info">
+                                <span>Rolling RMSSD</span>
+                                <span>Short-term HRV over time</span>
+                            </div>
+                            <input type="checkbox" id="show_rollingRMSSD" checked class="sett-checkbox">
+                        </label>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-icon">🔵</div>
+                            <div class="sett-toggle-info">
+                                <span>Poincaré Plot</span>
+                                <span>SD1/SD2 geometric HRV analysis</span>
+                            </div>
+                            <input type="checkbox" id="show_poincare" checked class="sett-checkbox">
+                        </label>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-icon">📊</div>
+                            <div class="sett-toggle-info">
+                                <span>Power Spectral Density</span>
+                                <span>LF/HF frequency domain analysis</span>
+                            </div>
+                            <input type="checkbox" id="show_psd" checked class="sett-checkbox">
+                        </label>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-icon">💓</div>
+                            <div class="sett-toggle-info">
+                                <span>Heart Rate + Zones</span>
+                                <span>Continuous HR with coloured training zones</span>
+                            </div>
+                            <input type="checkbox" id="show_hr" checked class="sett-checkbox">
+                        </label>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-icon">🧠</div>
+                            <div class="sett-toggle-info">
+                                <span>Vagal Proxy (RMSSD/SDNN)</span>
+                                <span>Rolling autonomic balance index</span>
+                            </div>
+                            <input type="checkbox" id="show_vagalProxy" checked class="sett-checkbox">
+                        </label>
+                    </div>
+                </div>
+
+                <!-- ── Layout ── -->
+                <div class="sett-section">
+                    <div class="sett-section-head"><span class="sett-section-icon">⊞</span>Chart Layout</div>
+                    <div class="sett-card">
+                        <p class="sett-hint-text">Drag charts by their title bar · Resize from any edge or corner · Layout is saved automatically between sessions.</p>
+                        <button class="btn btn-secondary" id="resetLayoutBtn" style="width:100%;margin-top:12px;">↺ Reset to Default Layout</button>
+                    </div>
+                </div>
+
+            </div><!-- /.modal-content -->
+        </div><!-- /#settingsPanel -->
 
         <div class="controls" id="controlsPanel">
             <!-- Connection Section -->
@@ -500,7 +634,7 @@
         </div>
     </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/gridstack.js/10.3.1/gridstack.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gridstack@8.4.0/dist/gridstack.min.js"></script>
     <script src="engine.js"></script>
 </body>
 </html>
