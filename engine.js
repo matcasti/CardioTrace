@@ -2743,521 +2743,544 @@ function generateMetadataHeader(sessionData) {
 }
 
 // Generate Professional PDF Report
+// Generate HTML Report (print-to-PDF friendly)
 async function generatePDFReport() {
     if (rrIntervals.length === 0) {
         alert('No data available for report generation');
         return;
     }
 
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF('p', 'mm', 'a4');
-
-    // Page dimensions
-    const pageWidth = 210;
-    const pageHeight = 297;
-    const margin = 20;
-    const contentWidth = pageWidth - (2 * margin);
-    let yPos = margin;
-
-    // Enhanced minimalist color palette
-    const colors = {
-        primary: [20, 20, 20],           // Deep black for headers
-        secondary: [60, 60, 60],         // Dark gray for body text
-        tertiary: [120, 120, 120],       // Medium gray for labels
-        light: [180, 180, 180],          // Light gray for dividers
-        veryLight: [245, 245, 245],      // Very light gray for backgrounds
-        accent: [99, 102, 241],          // Subtle blue accent (array for RGB)
-        accentLight: [147, 150, 255]     // Light blue
-    };
-
-    // Helper: Add page with footer
-    const addPageWithFooter = () => {
-        doc.addPage();
-        yPos = margin + 10; // Account for header space
-        addMinimalHeader();
-    };
-
-    // Helper: Check page break
-    const checkPageBreak = (heightNeeded) => {
-        if (yPos + heightNeeded > pageHeight - margin - 20) {
-            addPageWithFooter();
-            return true;
-        }
-        return false;
-    };
-
-    // Helper: Add minimal header (for subsequent pages)
-    const addMinimalHeader = () => {
-        doc.setDrawColor(...colors.light);
-        doc.setLineWidth(0.3);
-        doc.line(margin, 22, pageWidth - margin, 22);
-
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(...colors.tertiary);
-        doc.text('CARDIAC AUTONOMIC FUNCTION REPORT', margin, 18);
-
-        const sessionDate = new Date(calibrationStartTime || sessionStartTime);
-        doc.text(sessionDate.toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric'
-        }), pageWidth - margin, 18, { align: 'right' });
-    };
-
-    // Helper: Add section header with minimal design
-    const addSectionHeader = (title) => {
-        checkPageBreak(16);
-
-        yPos += 2;
-        doc.setFontSize(12);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(...colors.primary);
-        doc.text(title, margin, yPos);
-
-        yPos += 2;
-        doc.setDrawColor(...colors.accent);
-        doc.setLineWidth(0.8);
-        doc.line(margin, yPos, margin + 30, yPos);
-
-        yPos += 8;
-    };
-
-    // Helper: Add key-value pair
-    const addKeyValue = (key, value, indent = 0) => {
-        checkPageBreak(7);
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(...colors.tertiary);
-
-        const xStart = margin + indent;
-        doc.text(key, xStart, yPos);
-
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(...colors.secondary);
-        doc.text(value, xStart + 60, yPos);
-
-        yPos += 6;
-    };
-
-    // Helper: Add body text
-    const addBodyText = (text, indent = 0) => {
-        checkPageBreak(6);
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(...colors.tertiary);
-        const lines = doc.splitTextToSize(text, contentWidth - indent);
-        lines.forEach(line => {
-            doc.text(line, margin + indent, yPos);
-            yPos += 5;
-        });
-    };
-
-    // Calculate all metrics
-    const sessionDate = new Date(calibrationStartTime || sessionStartTime);
-    const duration = timestamps.length > 0 ? Math.floor(timestamps[timestamps.length - 1]) : 0;
-    const dataQuality = calculateDataQuality(rawRRIntervals.length, rrIntervals.length);
-
-    const avgRR = rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length;
-    const sdnn = Math.sqrt(rrIntervals.reduce((sum, rr) => sum + Math.pow(rr - avgRR, 2), 0) / rrIntervals.length);
-
-    let rmssd = 0;
-    if (rrIntervals.length > 1) {
-        let sumSquaredDiff = 0;
-        for (let i = 1; i < rrIntervals.length; i++) {
-            sumSquaredDiff += Math.pow(rrIntervals[i] - rrIntervals[i - 1], 2);
-        }
-        rmssd = Math.sqrt(sumSquaredDiff / (rrIntervals.length - 1));
-    }
-
-    const pnn50 = rrIntervals.reduce((count, rr, i) => {
-        if (i === 0) return count;
-        return count + (Math.abs(rr - rrIntervals[i - 1]) > 50 ? 1 : 0);
-    }, 0) / (rrIntervals.length - 1) * 100;
-
-    const psdResult = calculatePSD(rrIntervals, timestamps);
-    const vlfPower = integrateBandPower(psdResult.freq, psdResult.power, 0.003, 0.04);
-    const lfPower = integrateBandPower(psdResult.freq, psdResult.power, 0.04, 0.15);
-    const hfPower = integrateBandPower(psdResult.freq, psdResult.power, 0.15, 0.4);
-    const totalPower = vlfPower + lfPower + hfPower;
-    const lfhfRatio = hfPower > 0 ? lfPower / hfPower : 0;
-
-    const hrValues = rrIntervals.map(rr => 60000 / rr);
-    const avgHR = hrValues.reduce((a, b) => a + b, 0) / hrValues.length;
-    const minHR = Math.min(...hrValues);
-    const maxHR = Math.max(...hrValues);
-
-    const sriResult = calculateSRI();
-    const sriStatus = sriResult ? getSRIStatus(sriResult.score) : null;
-
-    // === ENHANCED COVER PAGE ===
-    // Subtle gradient background
-    doc.setFillColor(...colors.veryLight);
-    doc.rect(0, 0, pageWidth, 80, 'F');
-
-    // Main title
-    doc.setFontSize(28);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(...colors.primary);
-    doc.text('CARDIAC AUTONOMIC', pageWidth / 2, 35, { align: 'center' });
-    doc.text('FUNCTION REPORT', pageWidth / 2, 48, { align: 'center' });
-
-    // Accent line
-    doc.setDrawColor(...colors.accent);
-    doc.setLineWidth(1.2);
-    doc.line(pageWidth / 2 - 40, 54, pageWidth / 2 + 40, 54);
-
-    // Subtitle
-    doc.setFontSize(11);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(...colors.secondary);
-    doc.text('Heart Rate Variability Analysis', pageWidth / 2, 64, { align: 'center' });
-
-    // Session info box
-    yPos = 90;
-    doc.setFillColor(255, 255, 255);
-    doc.setDrawColor(...colors.light);
-    doc.setLineWidth(0.3);
-    doc.rect(margin, yPos, contentWidth, 45, 'FD');
-
-    yPos += 8;
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(...colors.primary);
-    doc.text('SESSION DETAILS', margin + 8, yPos);
-
-    yPos += 8;
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(...colors.secondary);
-
-    const sessionInfo = [
-        ['Date', sessionDate.toLocaleString('en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        })],
-        ['Duration', formatDuration(duration)],
-        ['Data Points', rrIntervals.length.toLocaleString() + ' intervals'],
-        ['Quality', dataQuality + '%']
-    ];
-
-    sessionInfo.forEach(([label, value]) => {
-        doc.setTextColor(...colors.tertiary);
-        doc.text(label + ':', margin + 8, yPos);
-        doc.setTextColor(...colors.secondary);
-        doc.setFont('helvetica', 'bold');
-        doc.text(value, margin + 50, yPos);
-        doc.setFont('helvetica', 'normal');
-        yPos += 7;
-    });
-
-    // Key metrics at a glance
-    yPos = 145;
-    doc.setFillColor(99, 102, 241);  // Use RGB values directly
-    doc.rect(0, yPos, pageWidth, 50, 'F');
-
-    yPos += 12;
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(255, 255, 255);
-    doc.text('KEY METRICS', pageWidth / 2, yPos, { align: 'center' });
-
-    yPos += 12;
-    const keyMetrics = [
-        ['SRI', sriResult ? sriResult.score + '/100' : '--'],
-        ['RMSSD', rmssd.toFixed(1) + ' ms'],
-        ['LF/HF', lfhfRatio.toFixed(2)],
-        ['Avg HR', avgHR.toFixed(0) + ' bpm']
-    ];
-
-    const metricWidth = contentWidth / keyMetrics.length;
-    keyMetrics.forEach(([label, value], idx) => {
-        const xPos = margin + (idx * metricWidth) + (metricWidth / 2);
-
-        doc.setFontSize(18);
-        doc.setFont('helvetica', 'bold');
-        doc.text(value, xPos, yPos, { align: 'center' });
-
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'normal');
-        doc.text(label, xPos, yPos + 7, { align: 'center' });
-    });
-
-    // Export high-resolution charts with optimized settings for PDF readability
-    // Use larger base dimensions but lower scale to get bigger fonts
-    const psdChartImg = await Plotly.toImage('psdChart', {
-        format: 'png',
-        width: 1400,
-        height: 550,
-        scale: 1.5
-    });
-
-
-    const poincareImg = await Plotly.toImage('poincareChart', {
-        format: 'png',
-        width: 1400,
-        height: 750,
-        scale: 1.5
-    });
-
-    const rmssdTrendImg = rollingRMSSD.length > 0 ? await Plotly.toImage('rollingRMSSDChart', {
-        format: 'png',
-        width: 1400,
-        height: 550,
-        scale: 1.5
-    }) : null;
-
-    // Generator info
-    yPos = pageHeight - 35;
-    doc.setFontSize(8);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(...colors.tertiary);
-    doc.text('Generated by Polar H10 Monitor', pageWidth / 2, yPos, { align: 'center' });
-    doc.setFontSize(7);
-    doc.text('Developed by Matías Castillo-Aguilar', pageWidth / 2, yPos + 5, { align: 'center' });
-
-    // === PAGE 2: CLINICAL INTERPRETATION ===
-    addPageWithFooter();
-
-    // Clinical summary box
-    doc.setFillColor(...colors.veryLight);
-    doc.setDrawColor(...colors.light);
-    doc.setLineWidth(0.3);
-
-    let interpretation = '';
-    if (sriResult) {
-        if (sriResult.score >= 75) {
-            interpretation = 'Excellent autonomic function with strong parasympathetic activity. ';
-        } else if (sriResult.score >= 55) {
-            interpretation = 'Good cardiovascular adaptation with adequate recovery capacity. ';
-        } else if (sriResult.score >= 35) {
-            interpretation = 'Moderate stress response detected. Consider recovery interventions. ';
-        } else {
-            interpretation = 'Significant autonomic imbalance. Prioritize rest and stress management. ';
-        }
-    }
-
-    if (lfhfRatio > 2.5) {
-        interpretation += 'High sympathetic dominance (LF/HF > 2.5) suggests stress or inadequate recovery. ';
-    } else if (lfhfRatio < 1) {
-        interpretation += 'Parasympathetic dominance indicates good recovery state. ';
-    }
-
-    if (rmssd < 20) {
-        interpretation += 'Low RMSSD (<20ms) indicates reduced vagal activity.';
-    } else if (rmssd > 50) {
-        interpretation += 'High RMSSD (>50ms) reflects excellent parasympathetic function.';
-    }
-
-    const interpretationLines = doc.splitTextToSize(interpretation, contentWidth - 30);
-    const boxHeight = 23 + (interpretationLines.length * 5);
-
-    doc.rect(margin, yPos, contentWidth, boxHeight, 'FD');
-
-    yPos += 10;
-    doc.setFontSize(11);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(...colors.primary);
-    doc.text('CLINICAL INTERPRETATION', margin + 4, yPos);
-
-    yPos += 10;
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(...colors.secondary);
-
-    interpretationLines.forEach(line => {
-        doc.text(line, margin + 4, yPos);
-        yPos += 5;
-    });
-
-    yPos += 12;
-
-    // Time domain metrics
-    addSectionHeader('TIME DOMAIN ANALYSIS');
-    addBodyText('Reflects overall autonomic nervous system activity and beat-to-beat variability');
-    yPos += 2;
-
-    addKeyValue('Mean RR Interval', avgRR.toFixed(1) + ' ms', 4);
-    addKeyValue('SDNN (Standard Deviation)', sdnn.toFixed(1) + ' ms', 4);
-    addKeyValue('RMSSD (Root Mean Square)', rmssd.toFixed(1) + ' ms', 4);
-    addKeyValue('pNN50 (Percentage)', pnn50.toFixed(1) + ' %', 4);
-
-    yPos += 4;
-
-    // Frequency domain metrics
-    addSectionHeader('FREQUENCY DOMAIN ANALYSIS');
-    addBodyText('Separates sympathetic and parasympathetic nervous system contributions');
-    yPos += 2;
-
-    const safePct = (val) => totalPower > 0 ? (val / totalPower * 100).toFixed(1) : '0.0';
-    addKeyValue('VLF Power (0.003-0.04 Hz)', vlfPower.toFixed(1) + ' ms² (' + safePct(vlfPower) + '%)', 4);
-    addKeyValue('LF Power (0.04-0.15 Hz)',   lfPower.toFixed(1)  + ' ms² (' + safePct(lfPower)  + '%)', 4);
-    addKeyValue('HF Power (0.15-0.4 Hz)',    hfPower.toFixed(1)  + ' ms² (' + safePct(hfPower)  + '%)', 4);
-    addKeyValue('Total Power', totalPower.toFixed(1) + ' ms²', 4);
-    addKeyValue('LF/HF Ratio', lfhfRatio.toFixed(2), 4);
-
-    yPos += 4;
-
-    // Heart rate metrics
-    addSectionHeader('HEART RATE METRICS');
-
-    addKeyValue('Average Heart Rate', avgHR.toFixed(1) + ' bpm', 4);
-    addKeyValue('Minimum Heart Rate', minHR.toFixed(0) + ' bpm', 4);
-    addKeyValue('Maximum Heart Rate', maxHR.toFixed(0) + ' bpm', 4);
-    addKeyValue('Heart Rate Range', (maxHR - minHR).toFixed(0) + ' bpm', 4);
-
-    if (peakHR > 0) {
-        addKeyValue('Peak HR (Session)', peakHR.toFixed(0) + ' bpm', 4);
-        addKeyValue('HR Recovery Rate', ((peakHR - avgHR) / peakHR * 100).toFixed(1) + ' %', 4);
-    }
-
-    // === PAGE 3: VISUALIZATIONS (TWO PLOTS) ===
-    addPageWithFooter();
-
-    // PSD Chart (top half)
-    addSectionHeader('POWER SPECTRAL DENSITY');
-    addBodyText('Frequency domain representation showing autonomic nervous system activity distribution');
-    yPos += 3;
-
-    const psdHeight = 60;
-    doc.addImage(psdChartImg, 'PNG', margin, yPos, contentWidth, psdHeight);
-    yPos += psdHeight + 8;
-
-    // Poincaré Plot (bottom half)
-    addSectionHeader('POINCARÉ PLOT');
-    addBodyText('Geometric visualization of beat-to-beat RR interval variability');
-    yPos += 3;
-
-    const poincareSize = 80;
-    doc.addImage(poincareImg, 'PNG', margin, yPos, contentWidth, poincareSize);
-    yPos += poincareSize + 8;
-
-    // === PAGE 4: TREND ANALYSIS (if available) ===
-    if (rmssdTrendImg) {
-        checkPageBreak(90);
-
-        // If we're on the same page as Poincaré, add spacing; otherwise start fresh page
-        if (yPos < pageHeight - margin - 90) {
-            // Can fit on current page
-            yPos += 5;
-        } else {
-            addPageWithFooter();
-        }
-
-        addSectionHeader('HRV TREND ANALYSIS');
-        addBodyText('Rolling 1-minute RMSSD showing autonomic activity changes throughout the session');
-        yPos += 3;
-
-        const trendHeight = 60;
-        doc.addImage(rmssdTrendImg, 'PNG', margin, yPos, contentWidth, trendHeight);
-        yPos += trendHeight + 8;
-    }
-
-    // === REFERENCE RANGES ===
-    checkPageBreak(65);
-    addSectionHeader('REFERENCE RANGES');
-
-    const refData = [
-        ['Metric', 'Excellent', 'Good', 'Fair', 'Poor'],
-        ['RMSSD', '>50 ms', '30-50 ms', '20-30 ms', '<20 ms'],
-        ['SDNN', '>100 ms', '50-100 ms', '25-50 ms', '<25 ms'],
-        ['LF/HF Ratio', '0.5-1.5', '1.5-2.5', '2.5-3.5', '>3.5'],
-        ['SRI Score', '75-100', '55-74', '35-54', '0-34']
-    ];
-
-    const colWidths = [42, 32, 32, 32, 32];
-    const rowHeight = 8;
-    let tableY = yPos;
-
-    doc.setFontSize(9);
-    refData.forEach((row, i) => {
-        let tableX = margin;
-        row.forEach((cell, j) => {
-            doc.setDrawColor(...colors.light);
-            doc.setLineWidth(0.2);
-
-            if (i === 0) {
-                doc.setFillColor(...colors.veryLight);
-                doc.setFont('helvetica', 'bold');
-                doc.setTextColor(...colors.primary);
-            } else {
-                doc.setFillColor(255, 255, 255);
-                doc.setFont('helvetica', 'normal');
-                doc.setTextColor(...colors.secondary);
+    reportBtn.disabled = true;
+    reportBtn.textContent = '⏳ Building...';
+
+    try {
+        // ── Capture chart images ─────────────────────────────────────────────
+        const scale = 2;
+        const [imgPSD, imgPoincare, imgRR, imgRMSSD] = await Promise.all([
+            Plotly.toImage('psdChart',          { format: 'png', width: 1100, height: 420, scale }),
+            Plotly.toImage('poincareChart',     { format: 'png', width:  700, height: 600, scale }),
+            Plotly.toImage('rrChart',           { format: 'png', width: 1100, height: 380, scale }),
+            rollingRMSSD.length > 0
+                ? Plotly.toImage('rollingRMSSDChart', { format: 'png', width: 1100, height: 380, scale })
+                : Promise.resolve(null)
+        ]);
+
+        // ── Compute metrics ──────────────────────────────────────────────────
+        const sessionDate  = new Date(calibrationStartTime || sessionStartTime);
+        const duration     = timestamps.length > 0 ? Math.floor(timestamps[timestamps.length - 1]) : 0;
+        const dquality     = calculateDataQuality(rawRRIntervals.length, rrIntervals.length);
+        const sessionName  = document.getElementById('filename').value || 'polar-h10-data';
+
+        const avgRR  = rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length;
+        const sdnn   = Math.sqrt(rrIntervals.reduce((s, rr) => s + Math.pow(rr - avgRR, 2), 0) / rrIntervals.length);
+        let   rmssd  = 0;
+        let   pnn50  = 0;
+        if (rrIntervals.length > 1) {
+            let sqSum = 0, nn50 = 0;
+            for (let i = 1; i < rrIntervals.length; i++) {
+                const d = rrIntervals[i] - rrIntervals[i - 1];
+                sqSum += d * d;
+                if (Math.abs(d) > 50) nn50++;
             }
+            rmssd = Math.sqrt(sqSum / (rrIntervals.length - 1));
+            pnn50 = (nn50 / (rrIntervals.length - 1)) * 100;
+        }
 
-            doc.rect(tableX, tableY, colWidths[j], rowHeight, 'FD');
-            doc.text(cell, tableX + 2, tableY + 5.5);
-            tableX += colWidths[j];
-        });
-        tableY += rowHeight;
-    });
-    yPos = tableY + 10;
+        const hrVals = rrIntervals.map(rr => 60000 / rr);
+        const avgHR  = hrVals.reduce((a, b) => a + b, 0) / hrVals.length;
+        const minHR  = Math.min(...hrVals);
+        const maxHR  = Math.max(...hrVals);
 
-    // === CLINICAL CONSIDERATIONS ===
-    checkPageBreak(70);
-    addSectionHeader('CLINICAL CONSIDERATIONS');
+        const psd       = calculatePSD(rrIntervals, timestamps);
+        const vlfPow    = integrateBandPower(psd.freq, psd.power, 0.003, 0.04);
+        const lfPow     = integrateBandPower(psd.freq, psd.power, 0.04,  0.15);
+        const hfPow     = integrateBandPower(psd.freq, psd.power, 0.15,  0.40);
+        const totPow    = vlfPow + lfPow + hfPow;
+        const lfhfRatio = hfPow > 0 ? lfPow / hfPow : 0;
 
-    const notes = [
-        'This report provides objective measurements of cardiac autonomic function based on HRV analysis.',
-        'Results should be interpreted in appropriate clinical context alongside patient history.',
-        'Factors affecting HRV: age, fitness, medications, time of day, hydration, stress, and health conditions.',
-        'For clinical decisions and medical interpretation, consult qualified healthcare professionals.',
-        'Data quality >95% recommended for reliable clinical interpretation.'
-    ];
+        const sriResult = calculateSRI();
+        const sri       = sriResult ? sriResult.score : 0;
+        const sriStatus = sriResult ? getSRIStatus(sri) : null;
 
-    doc.setFontSize(8.5);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(...colors.secondary);
+        // ── Helpers ──────────────────────────────────────────────────────────
+        const fmt  = (v, d = 1) => (v == null || !isFinite(v)) ? '—' : v.toFixed(d);
+        const pct  = (v)        => totPow > 0 ? ((v / totPow) * 100).toFixed(1) + '%' : '—';
+        const fmtD = (s)        => {
+            const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+            if (h > 0) return `${h}h ${m}m`;
+            if (m > 0) return `${m}m ${sec}s`;
+            return `${sec}s`;
+        };
 
-    notes.forEach(note => {
-        checkPageBreak(8);
-        const lines = doc.splitTextToSize('• ' + note, contentWidth - 6);
-        lines.forEach(line => {
-            doc.text(line, margin + 3, yPos);
-            yPos += 5;
-        });
-        yPos += 1;
-    });
+        const sriColor = sri >= 75 ? '#10b981' : sri >= 55 ? '#22d3ee' : sri >= 35 ? '#f59e0b' : '#ef4444';
+        const sriLabel = sri >= 75 ? 'Excellent' : sri >= 55 ? 'Good' : sri >= 35 ? 'Fair' : 'Poor';
 
-    // === FOOTER ON ALL PAGES ===
-    const pageCount = doc.internal.getNumberOfPages();
-    for (let i = 1; i <= pageCount; i++) {
-        doc.setPage(i);
+        // Table row helper
+        const row = (label, value, unit, ref, interp) => `
+          <tr>
+            <td class="lc">${label}</td>
+            <td class="vc">${value}</td>
+            <td class="uc">${unit}</td>
+            <td class="rc">${ref}</td>
+            <td class="ic">${interp}</td>
+          </tr>`;
 
-        // Footer separator line
-        doc.setDrawColor(...colors.light);
-        doc.setLineWidth(0.2);
-        doc.line(margin, pageHeight - 15, pageWidth - margin, pageHeight - 15);
+        // Events table rows
+        const eventRows = eventMarkers.length > 0
+            ? eventMarkers.map(e => `
+              <tr>
+                <td class="vc">${fmt(e.time, 1)}</td>
+                <td>${e.type || '—'}</td>
+                <td>${e.annotation || '—'}</td>
+              </tr>`).join('')
+            : `<tr><td colspan="3" style="text-align:center;color:#8a9bb8;padding:16px">No events recorded</td></tr>`;
 
-        // Footer content
-        doc.setFontSize(7);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(...colors.tertiary);
+        // Tags
+        const tagsHtml = sessionTags.length > 0
+            ? sessionTags.map(t => `<span class="tag">${t}</span>`).join('')
+            : '<span style="color:#8a9bb8">None</span>';
 
-        doc.text('Generated: ' + new Date().toLocaleString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        }), margin, pageHeight - 9);
+        // ── Build HTML ───────────────────────────────────────────────────────
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardioTrace Report — ${sessionName}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:#0f172a;--ink2:#334155;--ink3:#64748b;--ink4:#94a3b8;
+  --bg:#f8fafc;--card:#fff;--border:#e2e8f0;--border2:#cbd5e1;
+  --accent:#6366f1;--accent2:#ec4899;--accent3:#22d3ee;
+  --success:#10b981;--warn:#f59e0b;--danger:#ef4444;
+}
+body{font-family:'Inter',system-ui,sans-serif;font-size:13px;color:var(--ink);
+  background:var(--bg);line-height:1.6;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 
-        doc.text('Page ' + i + ' of ' + pageCount, pageWidth - margin, pageHeight - 9, { align: 'right' });
+/* PAGE SHELL */
+.page{max-width:1020px;margin:28px auto;background:var(--card);
+  border-radius:16px;overflow:hidden;box-shadow:0 8px 48px rgba(15,23,42,.12)}
 
-        doc.setTextColor(...colors.light);
-        doc.text('Polar H10 Monitor — Research & Educational Use Only', pageWidth / 2, pageHeight - 9, { align: 'center' });
+/* ── HEADER ── */
+.rh{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 45%,#4f46e5 100%);
+  padding:36px 48px;color:#fff;position:relative;overflow:hidden}
+.rh::before{content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse at 80% 50%,rgba(236,72,153,.18) 0%,transparent 60%);
+  pointer-events:none}
+.rh-eyebrow{font-size:9.5px;font-weight:700;letter-spacing:3px;text-transform:uppercase;
+  color:rgba(255,255,255,.45);margin-bottom:10px}
+.rh-title{font-size:30px;font-weight:900;letter-spacing:-1px;margin-bottom:4px;
+  background:linear-gradient(90deg,#fff 0%,rgba(255,255,255,.75) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.rh-sub{font-size:13px;color:rgba(255,255,255,.55);font-weight:400;margin-bottom:24px}
+.rh-pills{display:flex;gap:32px;flex-wrap:wrap;padding-top:18px;
+  border-top:1px solid rgba(255,255,255,.1)}
+.rh-pill{font-size:10px;color:rgba(255,255,255,.45);line-height:2}
+.rh-pill strong{display:block;font-size:12.5px;font-weight:600;color:#fff}
+
+/* ── PRINT BUTTON (hidden on print) ── */
+.print-bar{display:flex;gap:10px;justify-content:flex-end;padding:12px 48px;
+  background:linear-gradient(90deg,#f1f5f9,#f8fafc);border-bottom:1px solid var(--border)}
+.print-btn{padding:8px 20px;border-radius:8px;border:none;cursor:pointer;font-size:12px;
+  font-weight:600;font-family:inherit;letter-spacing:.3px;transition:all .2s}
+.print-btn.primary{background:var(--accent);color:#fff}
+.print-btn.primary:hover{background:#4f46e5}
+.print-btn.secondary{background:var(--border);color:var(--ink2)}
+.print-btn.secondary:hover{background:var(--border2)}
+
+/* ── BODY ── */
+.rb{padding:36px 48px}
+
+/* ── KPI ROW ── */
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:28px}
+.kpi{background:var(--bg);border:1px solid var(--border);border-radius:12px;
+  padding:18px 16px;position:relative;overflow:hidden}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:var(--kpi-accent,var(--accent))}
+.kpi-label{font-size:9.5px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--ink3);margin-bottom:8px}
+.kpi-value{font-size:26px;font-weight:900;letter-spacing:-1px;color:var(--ink);line-height:1}
+.kpi-unit{font-size:10px;color:var(--ink4);margin-top:4px;font-weight:500}
+.kpi-badge{display:inline-block;margin-top:8px;padding:3px 10px;border-radius:20px;
+  font-size:10px;font-weight:700;color:#fff;background:var(--kpi-accent,var(--accent))}
+
+/* ── INTERPRETATION BANNER ── */
+.interp-banner{padding:14px 20px;border-radius:12px;margin-bottom:28px;
+  border-left:4px solid var(--interp-color,var(--accent));
+  background:var(--interp-bg,rgba(99,102,241,.06));display:flex;align-items:flex-start;gap:12px}
+.interp-icon{font-size:20px;flex-shrink:0;margin-top:1px}
+.interp-text{font-size:12px;color:var(--ink2);line-height:1.65}
+.interp-text strong{display:block;font-size:13px;color:var(--ink);margin-bottom:3px}
+
+/* ── SECTION ── */
+.sec{margin-bottom:32px}
+.sec-title{display:flex;align-items:center;gap:10px;margin-bottom:16px;
+  padding-bottom:10px;border-bottom:1.5px solid var(--border)}
+.sec-title-bar{width:4px;height:16px;border-radius:2px;flex-shrink:0;
+  background:linear-gradient(180deg,var(--accent),var(--accent2))}
+.sec-title-text{font-size:10px;font-weight:700;letter-spacing:2px;
+  text-transform:uppercase;color:var(--ink2)}
+
+/* ── METRIC TABLE ── */
+.mt{width:100%;border-collapse:collapse;font-size:12px}
+.mt thead tr{background:linear-gradient(90deg,#1e1b4b,#4f46e5)}
+.mt thead th{padding:10px 14px;font-size:9.5px;font-weight:700;color:#fff;
+  text-align:left;letter-spacing:.8px;text-transform:uppercase}
+.mt tbody tr:nth-child(even){background:#f8fafc}
+.mt tbody tr:hover{background:#eef2ff}
+.mt td{padding:9px 14px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
+.mt tbody tr:last-child td{border-bottom:none}
+.lc{font-weight:500;color:var(--ink2);min-width:190px}
+.vc{font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--accent);
+  font-size:12.5px;min-width:80px}
+.uc{color:var(--ink4);min-width:50px;font-size:11px}
+.rc{color:#15803d;font-size:11px;min-width:140px}
+.ic{color:#92400e;font-size:11px}
+
+/* ── CHART CARDS ── */
+.chart-card{background:var(--bg);border:1px solid var(--border);border-radius:12px;
+  overflow:hidden;margin-bottom:14px}
+.chart-card-label{padding:10px 16px;font-size:9px;font-weight:700;letter-spacing:2px;
+  text-transform:uppercase;color:var(--ink3);border-bottom:1px solid var(--border)}
+.chart-card img{display:block;width:100%;height:auto}
+.charts-2col{display:grid;grid-template-columns:3fr 2fr;gap:14px;margin-bottom:14px}
+
+/* ── EVENTS TABLE ── */
+.ev-table{width:100%;border-collapse:collapse;font-size:12px}
+.ev-table th{background:#f1f5f9;padding:9px 14px;font-size:10px;font-weight:600;
+  color:var(--ink3);text-align:left;border:1px solid var(--border)}
+.ev-table td{padding:8px 14px;border:1px solid var(--border)}
+
+/* ── TAG CHIPS ── */
+.tag{display:inline-block;padding:2px 10px;margin:2px;border-radius:20px;font-size:10px;
+  font-weight:600;background:rgba(99,102,241,.1);color:var(--accent);
+  border:1px solid rgba(99,102,241,.25)}
+
+/* ── SRI SECTION ── */
+.sri-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px}
+.sri-component{background:var(--bg);border:1px solid var(--border);border-radius:10px;
+  padding:14px 16px;display:flex;justify-content:space-between;align-items:center}
+.sri-comp-label{font-size:11px;font-weight:600;color:var(--ink3);text-transform:uppercase;
+  letter-spacing:.5px}
+.sri-comp-value{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700;
+  color:var(--accent)}
+
+/* ── FOOTER ── */
+.rf{background:#f1f5f9;padding:20px 48px;border-top:1px solid var(--border);
+  font-size:10.5px;color:var(--ink3);line-height:1.8}
+.rf strong{color:var(--ink2)}
+.rf a{color:var(--accent);text-decoration:none}
+
+/* ── NOTE BOX ── */
+.note{background:#eff6ff;border-left:3px solid var(--accent);padding:10px 14px;
+  font-size:11px;color:var(--ink2);border-radius:0 8px 8px 0;margin-top:12px;line-height:1.6}
+
+/* ── PRINT ── */
+@media print{
+  body{background:#fff}
+  .page{box-shadow:none;border-radius:0;max-width:100%;margin:0}
+  .print-bar{display:none}
+  .rh{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .mt thead tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .mt tbody tr:nth-child(even){-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .sec,.mt,.chart-card,.kpi-row,.interp-banner{break-inside:avoid}
+  .charts-2col{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- ── HEADER ───────────────────────────────────────────────────────── -->
+<div class="rh">
+  <div class="rh-eyebrow">❤️ CardioTrace · Cardiac Autonomic Function Report</div>
+  <div class="rh-title">Heart Rate Variability Analysis</div>
+  <div class="rh-sub">${sessionName}</div>
+  <div class="rh-pills">
+    <div class="rh-pill">Date<strong>${sessionDate.toLocaleString('en-US',{dateStyle:'medium',timeStyle:'short'})}</strong></div>
+    <div class="rh-pill">Duration<strong>${fmtD(duration)}</strong></div>
+    <div class="rh-pill">RR Intervals<strong>${rrIntervals.length.toLocaleString()}</strong></div>
+    <div class="rh-pill">Data Quality<strong>${dquality}%</strong></div>
+    ${sessionTags.length ? `<div class="rh-pill">Tags<strong>${sessionTags.join(', ')}</strong></div>` : ''}
+    <div class="rh-pill">Generated<strong>${new Date().toLocaleString('en-US',{dateStyle:'medium',timeStyle:'short'})}</strong></div>
+  </div>
+</div>
+
+<!-- ── PRINT BAR ─────────────────────────────────────────────────────── -->
+<div class="print-bar">
+  <button class="print-btn secondary" onclick="window.close()">✕ Close</button>
+  <button class="print-btn primary" onclick="window.print()">🖨️ Print / Save PDF</button>
+</div>
+
+<div class="rb">
+
+<!-- ── KPI CARDS ─────────────────────────────────────────────────────── -->
+<div class="kpi-row">
+  <div class="kpi" style="--kpi-accent:${sriColor}">
+    <div class="kpi-label">Stress Recovery Index</div>
+    <div class="kpi-value" style="color:${sriColor}">${sri > 0 ? sri : '—'}</div>
+    <div class="kpi-unit">out of 100</div>
+    ${sri > 0 ? `<div class="kpi-badge" style="background:${sriColor}">${sriLabel}</div>` : ''}
+  </div>
+  <div class="kpi" style="--kpi-accent:#6366f1">
+    <div class="kpi-label">RMSSD</div>
+    <div class="kpi-value">${fmt(rmssd)}</div>
+    <div class="kpi-unit">ms · 1-min window</div>
+  </div>
+  <div class="kpi" style="--kpi-accent:#ec4899">
+    <div class="kpi-label">LF / HF Ratio</div>
+    <div class="kpi-value">${fmt(lfhfRatio, 2)}</div>
+    <div class="kpi-unit">sympatho-vagal balance</div>
+  </div>
+  <div class="kpi" style="--kpi-accent:#22d3ee">
+    <div class="kpi-label">Average Heart Rate</div>
+    <div class="kpi-value">${fmt(avgHR, 0)}</div>
+    <div class="kpi-unit">bpm</div>
+  </div>
+</div>
+
+<!-- ── INTERPRETATION BANNER ─────────────────────────────────────────── -->
+${sriResult ? (() => {
+    let bg, color, icon, headline, body;
+    if (sri >= 75) {
+        color='#10b981'; bg='rgba(16,185,129,.07)'; icon='🌟';
+        headline='Excellent Recovery — Optimal Autonomic Balance';
+        body=`Strong parasympathetic activity with RMSSD of ${fmt(rmssd)} ms and LF/HF ratio of ${fmt(lfhfRatio,2)}.
+              Autonomic regulation is well maintained. Continue current training and recovery protocols.`;
+    } else if (sri >= 55) {
+        color='#22d3ee'; bg='rgba(34,211,238,.07)'; icon='✅';
+        headline='Good Recovery — Healthy Stress Response';
+        body=`Adequate recovery capacity detected. RMSSD of ${fmt(rmssd)} ms indicates reasonable parasympathetic tone.
+              Monitor trends over consecutive days for a complete picture.`;
+    } else if (sri >= 35) {
+        color='#f59e0b'; bg='rgba(245,158,11,.07)'; icon='⚠️';
+        headline='Fair Recovery — Moderate Stress Detected';
+        body=`Reduced HRV metrics suggest elevated sympathetic activity (LF/HF: ${fmt(lfhfRatio,2)}).
+              Consider implementing recovery strategies: sleep optimisation, breathing exercises, or reduced training load.`;
+    } else {
+        color='#ef4444'; bg='rgba(239,68,68,.07)'; icon='⚡';
+        headline='Poor Recovery — High Stress Levels';
+        body=`Significant autonomic imbalance observed (RMSSD: ${fmt(rmssd)} ms, LF/HF: ${fmt(lfhfRatio,2)}).
+              Prioritise rest, hydration, and stress management. Avoid high-intensity exercise until recovery improves.`;
     }
+    return `<div class="interp-banner" style="--interp-color:${color};--interp-bg:${bg}">
+      <div class="interp-icon">${icon}</div>
+      <div class="interp-text">
+        <strong>${headline}</strong>
+        ${body}
+      </div>
+    </div>`;
+})() : ''}
 
-    // === SAVE PDF ===
-    const filename = (document.getElementById('filename').value || 'polar-h10-report') +
-                    '_' + sessionDate.toISOString().slice(0, 10) + '.pdf';
-    doc.save(filename);
+<!-- ── CHARTS: RR + RMSSD ─────────────────────────────────────────────── -->
+<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Signal Overview</span></div>
+  <div class="chart-card">
+    <div class="chart-card-label">RR Intervals over Time${eventMarkers.length ? ' · Vertical markers = events' : ''}</div>
+    <img src="${imgRR}" alt="RR Intervals chart">
+  </div>
+  ${imgRMSSD ? `<div class="chart-card">
+    <div class="chart-card-label">Rolling RMSSD — 1-minute sliding window</div>
+    <img src="${imgRMSSD}" alt="Rolling RMSSD chart">
+  </div>` : ''}
+</div>
 
-    console.log('✅ Enhanced PDF report generated: ' + filename);
+<!-- ── CHARTS: PSD + POINCARÉ ─────────────────────────────────────────── -->
+<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Frequency & Geometric Analysis</span></div>
+  <div class="charts-2col">
+    <div class="chart-card">
+      <div class="chart-card-label">Power Spectral Density — Lomb-Scargle Periodogram</div>
+      <img src="${imgPSD}" alt="Power Spectral Density chart">
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-label">Poincaré Plot — RR(n) vs RR(n+1)</div>
+      <img src="${imgPoincare}" alt="Poincaré plot">
+    </div>
+  </div>
+  <div class="note">
+    <strong>Band legend:</strong> VLF 0.003–0.04 Hz · LF 0.04–0.15 Hz · HF 0.15–0.4 Hz.
+    PSD computed via Lomb-Scargle periodogram on unevenly-sampled RR series, normalised so ∫PSD·df = signal variance.
+    Poincaré ellipse elongation (SD2/SD1) reflects long-term vs short-term variability balance.
+  </div>
+</div>
+
+<!-- ── SRI BREAKDOWN ─────────────────────────────────────────────────── -->
+${sriResult ? `<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Stress Recovery Index — Component Breakdown</span></div>
+  <div class="sri-row">
+    <div class="sri-component">
+      <div>
+        <div class="sri-comp-label">RMSSD (35% weight)</div>
+        <div style="font-size:10px;color:var(--ink4);margin-top:4px">Parasympathetic activity</div>
+      </div>
+      <div class="sri-comp-value">${fmt(sriResult.components.rmssd)} ms</div>
+    </div>
+    <div class="sri-component">
+      <div>
+        <div class="sri-comp-label">LF/HF Ratio (35% weight)</div>
+        <div style="font-size:10px;color:var(--ink4);margin-top:4px">Sympatho-vagal balance</div>
+      </div>
+      <div class="sri-comp-value">${fmt(sriResult.components.lfhf, 2)}</div>
+    </div>
+    <div class="sri-component">
+      <div>
+        <div class="sri-comp-label">HR Recovery (30% weight)</div>
+        <div style="font-size:10px;color:var(--ink4);margin-top:4px">Cardiovascular fitness</div>
+      </div>
+      <div class="sri-comp-value">${fmt(sriResult.components.hrRecovery, 1)}%</div>
+    </div>
+  </div>
+  <div class="note">
+    SRI is a composite score (0–100) weighting RMSSD (35%), LF/HF inverse ratio (35%), and HR recovery rate (30%).
+    Scores ≥ 75 = Excellent · 55–74 = Good · 35–54 = Fair · 0–34 = Poor.
+  </div>
+</div>` : ''}
+
+<!-- ── TIME DOMAIN ────────────────────────────────────────────────────── -->
+<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Time Domain Analysis</span></div>
+  <table class="mt">
+    <thead>
+      <tr><th>Metric</th><th>Value</th><th>Unit</th><th>Reference Range</th><th>Clinical Note (if abnormal)</th></tr>
+    </thead>
+    <tbody>
+      ${row('Mean RR Interval',      fmt(avgRR),      'ms',  '600–1000 ms',   'HR &lt;60 or &gt;100 bpm may affect HRV interpretation')}
+      ${row('Average Heart Rate',    fmt(avgHR, 0),   'bpm', '60–100 bpm',    'Tachycardia or bradycardia alters all HRV indices')}
+      ${row('Min HR / Max HR',       fmt(minHR,0)+' / '+fmt(maxHR,0), 'bpm', '—', 'Narrow range: autonomic rigidity; wide: good chronotropic reserve')}
+      ${row('SDNN',                  fmt(sdnn),       'ms',  '50–100 ms',     '&lt;50 ms: reduced global HRV; risk marker for CV events')}
+      ${row('RMSSD',                 fmt(rmssd),      'ms',  '20–50 ms',      '&lt;20 ms: low vagal activity; associated with increased CV risk')}
+      ${row('pNN50',                 fmt(pnn50, 1),   '%',   '&gt;5–15%',     '&lt;5%: significant reduction in parasympathetic modulation')}
+      ${row('Total RR Intervals',    rrIntervals.length, '—', '≥300 (5 min)', 'Short recordings reduce reliability of all HRV indices')}
+      ${row('Data Quality',          dquality + '%', '—',   '&gt;95%',       'Low quality: excessive artifacts removed; check sensor contact')}
+    </tbody>
+  </table>
+</div>
+
+<!-- ── FREQUENCY DOMAIN ───────────────────────────────────────────────── -->
+<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Frequency Domain Analysis</span></div>
+  <table class="mt">
+    <thead>
+      <tr><th>Band / Metric</th><th>Value</th><th>Unit</th><th>Reference Range</th><th>Clinical Note (if abnormal)</th></tr>
+    </thead>
+    <tbody>
+      ${row('VLF Power (0.003–0.04 Hz)', fmt(vlfPow, 1) + ' · ' + pct(vlfPow), 'ms²', '&lt;1500 ms² (5 min)', 'Reduced: HF, sepsis; elevated: sleep apnoea')}
+      ${row('LF Power (0.04–0.15 Hz)',   fmt(lfPow,  1) + ' · ' + pct(lfPow),  'ms²', '500–1500 ms²',         'Elevated: stress, hypertension; reduced: autonomic neuropathy')}
+      ${row('HF Power (0.15–0.4 Hz)',    fmt(hfPow,  1) + ' · ' + pct(hfPow),  'ms²', '200–800 ms²',          'Reduced: low vagal tone, anxiety, DM, HF; elevated: athletes')}
+      ${row('Total Power (VLF+LF+HF)',   fmt(totPow, 1),                        'ms²', '—',                    'Correlates with SDNN²; represents global variability')}
+      ${row('LF / HF Ratio',            fmt(lfhfRatio, 2),                     '—',   '1.5–2.0 (rest)',       '&gt;2.5: sympathetic dominance or stress; &lt;0.8: vagal dominance')}
+    </tbody>
+  </table>
+</div>
+
+<!-- ── EVENTS ─────────────────────────────────────────────────────────── -->
+<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Recorded Events (${eventMarkers.length})</span></div>
+  <table class="ev-table">
+    <thead><tr><th>Time (s)</th><th>Event Type</th><th>Annotation</th></tr></thead>
+    <tbody>${eventRows}</tbody>
+  </table>
+</div>
+
+<!-- ── SESSION METADATA ───────────────────────────────────────────────── -->
+<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Session Metadata</span></div>
+  <table class="ev-table">
+    <tbody>
+      <tr><th style="width:180px">Session Name</th><td>${sessionName}</td></tr>
+      <tr><th>Start Time</th><td>${sessionDate.toLocaleString('en-US',{dateStyle:'full',timeStyle:'medium'})}</td></tr>
+      <tr><th>Duration</th><td>${fmtD(duration)}</td></tr>
+      <tr><th>Calibration Period</th><td>${CALIBRATION_DURATION / 1000} seconds (excluded from data)</td></tr>
+      <tr><th>Raw RR Intervals</th><td>${rawRRIntervals.length.toLocaleString()}</td></tr>
+      <tr><th>Valid (Clean) Intervals</th><td>${rrIntervals.length.toLocaleString()} (${dquality}%)</td></tr>
+      <tr><th>Artifacts Removed</th><td>${Math.max(0, rawRRIntervals.length - rrIntervals.length).toLocaleString()}</td></tr>
+      <tr><th>Tags</th><td>${tagsHtml}</td></tr>
+      ${peakHR > 0 ? `<tr><th>Peak Heart Rate</th><td>${peakHR} bpm</td></tr>` : ''}
+    </tbody>
+  </table>
+</div>
+
+<!-- ── REFERENCE RANGES ───────────────────────────────────────────────── -->
+<div class="sec">
+  <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">SRI Reference Scale</span></div>
+  <table class="mt">
+    <thead><tr><th>Score Range</th><th>Category</th><th>Autonomic Profile</th><th>Recommended Action</th></tr></thead>
+    <tbody>
+      <tr style="background:rgba(16,185,129,.06)">
+        <td class="vc" style="color:#10b981">75–100</td>
+        <td style="font-weight:600;color:#10b981">Excellent Recovery</td>
+        <td>Optimal parasympathetic activity, strong vagal tone</td>
+        <td>Maintain current protocols; suitable for high-intensity work</td>
+      </tr>
+      <tr style="background:rgba(34,211,238,.06)">
+        <td class="vc" style="color:#22d3ee">55–74</td>
+        <td style="font-weight:600;color:#22d3ee">Good Recovery</td>
+        <td>Healthy autonomic balance, adequate recovery capacity</td>
+        <td>Monitor trends; moderate training load is appropriate</td>
+      </tr>
+      <tr style="background:rgba(245,158,11,.06)">
+        <td class="vc" style="color:#f59e0b">35–54</td>
+        <td style="font-weight:600;color:#f59e0b">Fair Recovery</td>
+        <td>Moderate sympathetic dominance detected</td>
+        <td>Reduce training intensity; prioritise sleep and relaxation techniques</td>
+      </tr>
+      <tr style="background:rgba(239,68,68,.06)">
+        <td class="vc" style="color:#ef4444">0–34</td>
+        <td style="font-weight:600;color:#ef4444">Poor Recovery</td>
+        <td>Significant autonomic imbalance, high allostatic load</td>
+        <td>Rest day recommended; address stress, sleep debt, or illness</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+</div><!-- /.rb -->
+
+<!-- ── FOOTER ─────────────────────────────────────────────────────────── -->
+<div class="rf">
+  <strong>References:</strong>
+  Task Force of the ESC/NASPE (1996) <em>Eur Heart J</em> 17:354–381 ·
+  Cole CR et al. (1999) <em>NEJM</em> 341:1351–1357 ·
+  Bauer A et al. (2006) <em>Lancet</em> 367:1674–1681<br>
+  <strong>Disclaimer:</strong> This report is generated automatically by
+  <a href="https://github.com/matcasti" target="_blank">CardioTrace</a> for informational and research purposes only.
+  Reference ranges are indicative; clinical interpretation requires consideration of protocol, recording duration,
+  age, sex, medication, and clinical context. This report does not substitute professional medical judgement.
+</div>
+
+</div><!-- /.page -->
+</body>
+</html>`;
+
+        // ── Open in new tab ──────────────────────────────────────────────────
+        const blob = new Blob([html], { type: 'text/html' });
+        const url  = URL.createObjectURL(blob);
+        const win  = window.open(url, '_blank');
+        if (!win) {
+            // Popup blocked — fall back to download
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = (sessionName + '_report_' + sessionDate.toISOString().slice(0,10) + '.html');
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 200);
+        } else {
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        }
+
+        console.log('✅ HTML report generated: ' + sessionName);
+
+    } catch (err) {
+        console.error('Report generation failed:', err);
+        alert('Report generation failed. See console for details.');
+    } finally {
+        reportBtn.disabled = false;
+        reportBtn.textContent = '📄 Report';
+    }
 }
 
 // Export data
