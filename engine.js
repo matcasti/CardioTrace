@@ -191,6 +191,29 @@ let lastCWTResult = null; // Store last CWT calculation for band power reuse
 let dataQuality = 100;
 let selectedEventType = 'Note';
 let currentHR = 0;
+let currentSubjectId = null;
+let currentSubjectName = 'Anonymous';
+let currentSubjectAge = null;
+let activeProtocol      = null;
+let currentPhaseIdx     = 0;
+let phaseTimer          = null;
+let phaseSecondsLeft    = 0;
+let protocolRunning     = false;
+let protocolEditorState = { id: null, name: '', phases: [] };
+let analyzeCurrentSubtab  = 'trends';
+let comparisonSelectedIds = new Set();
+const TRACE_COLORS = [
+    '#6366f1','#ec4899','#22d3ee','#f59e0b',
+    '#10b981','#f43f5e','#8b5cf6','#06b6d4'
+];
+let focusMode       = false;
+let biofeedbackMode = false;
+let biofeedbackTimer = null;
+let breathePhase    = 'inhale'; // 'inhale' | 'exhale'
+let breatheCount    = 0;
+let monitorChannel  = null;
+let monitorWin      = null;
+let exportSelectedIds = new Set();
 let lastPacketTime = Date.now();
 let isCalibrating = false;
 let calibrationEndTime = null;
@@ -230,32 +253,33 @@ const hrZoneText = document.getElementById('hrZoneText');
 const dataQualityValue = document.getElementById('dataQualityValue');
 
 // History elements
-const historyBtn = document.getElementById('historyBtn');
-const historyPanel = document.getElementById('historyPanel');
-const historyOverlay = document.getElementById('historyOverlay');
-const historyClose = document.getElementById('historyClose');
 const historyContent = document.getElementById('historyContent');
 const historyBadge = document.getElementById('historyBadge');
 const historySearch = document.getElementById('historySearch');
 const tagFilter = document.getElementById('tagFilter');
 const sortFilter = document.getElementById('sortFilter');
 const clearAllBtn = document.getElementById('clearAllBtn');
-const historyTableContent = document.getElementById('historyTableContent');
 const historyTableBody = document.getElementById('historyTableBody');
 const tabCards = document.getElementById('tabCards');
 const tabTable = document.getElementById('tabTable');
 let currentHistoryView = 'cards'; // 'cards' | 'table'
+let currentTab = 'record';
+
+function switchTab(tabId) {
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('is-active', btn.dataset.tab === tabId);
+    });
+    document.querySelectorAll('.tab-panel').forEach(panel => {
+        panel.classList.toggle('is-active', panel.id === `tab-${tabId}`);
+    });
+    currentTab = tabId;
+    if (tabId === 'history')  renderHistory();
+    if (tabId === 'subjects') renderSubjects();
+    if (tabId === 'analyze')  renderAnalyzeTab();
+    if (tabId === 'export')   renderExportTab();
+}
 const bulkDownloadBtn = document.getElementById('bulkDownloadBtn');
 const bulkFormatSelect = document.getElementById('bulkFormatSelect');
-
-const historyTableModal   = document.getElementById('historyTableModal');
-const historyTableOverlay = document.getElementById('historyTableOverlay');
-const historyTableClose   = document.getElementById('historyTableClose');
-const historyTableBulkDownloadBtn = document.getElementById('historyTableBulkDownloadBtn');
-const historyTableFormatSelect    = document.getElementById('historyTableFormatSelect');
-const historyTableSearch   = document.getElementById('historyTableSearch');
-const historyTableTagFilter  = document.getElementById('historyTableTagFilter');
-const historyTableSortFilter = document.getElementById('historyTableSortFilter');
 
 // Event type elements
 const eventTypePanel = document.getElementById('eventTypePanel');
@@ -274,8 +298,40 @@ const currentTags = document.getElementById('currentTags');
 // IndexedDB
 let db;
 const DB_NAME = 'PolarH10Monitor';
-const DB_VERSION = 4; // Changed from 3 to 4 for SRI migration
+const DB_VERSION = 6;
 const STORE_NAME = 'sessions';
+const SUBJECTS_STORE = 'subjects';
+
+const BUILTIN_PROTOCOLS = [
+    {
+        id: 'builtin-1', name: '5-min Resting Baseline', isBuiltIn: true,
+        phases: [{ name: 'Rest', durationSecs: 300, autoMark: true }]
+    },
+    {
+        id: 'builtin-2', name: 'Short HRV Assessment', isBuiltIn: true,
+        phases: [
+            { name: 'Baseline rest',    durationSecs: 120, autoMark: true },
+            { name: 'Paced breathing',  durationSecs: 180, autoMark: true },
+            { name: 'Recovery',         durationSecs: 120, autoMark: true }
+        ]
+    },
+    {
+        id: 'builtin-3', name: 'Orthostatic Test', isBuiltIn: true,
+        phases: [
+            { name: 'Supine baseline',  durationSecs: 300, autoMark: true },
+            { name: 'Standing',         durationSecs: 180, autoMark: true },
+            { name: 'Recovery',         durationSecs: 300, autoMark: true }
+        ]
+    },
+    {
+        id: 'builtin-4', name: 'TMST (5-2-5)', isBuiltIn: true,
+        phases: [
+            { name: 'Pre-exercise baseline', durationSecs: 300, autoMark: true },
+            { name: 'Exercise',              durationSecs: 120, autoMark: true },
+            { name: 'Recovery',              durationSecs: 300, autoMark: true }
+        ]
+    }
+];
 
 // Initialize IndexedDB
 async function initDB() {
@@ -296,11 +352,25 @@ async function initDB() {
                 objectStore.createIndex('tags', 'tags', { unique: false, multiEntry: true });
             }
 
-            // Migration for version 4: Add SRI fields to existing sessions
             if (oldVersion < 4) {
                 console.log('📊 Migrating database to version 4 (adding SRI support)...');
-                // The SRI will be calculated on-demand when sessions are restored
-                // No schema changes needed, just marking the upgrade
+            }
+
+            if (oldVersion < 5) {
+                console.log('👤 Migrating database to version 5 (adding subjects store)...');
+                if (!db.objectStoreNames.contains(SUBJECTS_STORE)) {
+                    const subjectsStore = db.createObjectStore(SUBJECTS_STORE, { keyPath: 'id', autoIncrement: true });
+                    subjectsStore.createIndex('name', 'name', { unique: false });
+                    subjectsStore.createIndex('createdAt', 'createdAt', { unique: false });
+                }
+            }
+
+            if (oldVersion < 6) {
+                console.log('🔬 Migrating database to version 6 (adding protocols store)...');
+                if (!db.objectStoreNames.contains('protocols')) {
+                    const protoStore = db.createObjectStore('protocols', { keyPath: 'id', autoIncrement: true });
+                    protoStore.createIndex('name', 'name', { unique: false });
+                }
             }
         };
     });
@@ -321,6 +391,1684 @@ function loadTheme() {
     if (savedTheme === 'light') {
         document.documentElement.setAttribute('data-theme', 'light');
     }
+}
+
+// ── Subject helpers ───────────────────────────────────────
+
+function getEffectiveAge() {
+    return (currentSubjectAge !== null && currentSubjectAge > 0)
+        ? currentSubjectAge
+        : (appSettings.age || 30);
+}
+
+async function saveSubject(subjectData, subjectId = null) {
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction([SUBJECTS_STORE], 'readwrite');
+        const store = transaction.objectStore(SUBJECTS_STORE);
+        const subject = {
+            name: subjectData.name,
+            age: parseInt(subjectData.age) || 30,
+            createdAt: subjectData.createdAt || new Date().toISOString(),
+            notes: subjectData.notes || ''
+        };
+        if (subjectId) {
+            subject.id = subjectId;
+            const req = store.put(subject);
+            req.onsuccess = () => resolve(subjectId);
+            req.onerror = () => reject(req.error);
+        } else {
+            const req = store.add(subject);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        }
+    });
+}
+
+async function loadSubjects() {
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction([SUBJECTS_STORE], 'readonly');
+        const store = transaction.objectStore(SUBJECTS_STORE);
+        const request = store.getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function loadSubject(id) {
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction([SUBJECTS_STORE], 'readonly');
+        const store = transaction.objectStore(SUBJECTS_STORE);
+        const request = store.get(id);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function deleteSubject(id) {
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction([SUBJECTS_STORE], 'readwrite');
+        const store = transaction.objectStore(SUBJECTS_STORE);
+        const request = store.delete(id);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+    });
+}
+
+// ── Subject UI ────────────────────────────────────────────
+
+function updateSubjectChipDisplay() {
+    const nameEl = document.getElementById('currentSubjectName');
+    const ageEl  = document.getElementById('currentSubjectAgeTag');
+    if (nameEl) nameEl.textContent = currentSubjectName;
+    if (ageEl) {
+        if (currentSubjectAge) {
+            ageEl.textContent = `· ${currentSubjectAge} yrs`;
+            ageEl.style.display = '';
+        } else {
+            ageEl.textContent = '';
+            ageEl.style.display = 'none';
+        }
+    }
+}
+
+function selectSubject(id, name, age) {
+    currentSubjectId   = id;
+    currentSubjectName = name || 'Anonymous';
+    currentSubjectAge  = age || null;
+    updateSubjectChipDisplay();
+    closeSubjectPicker();
+    if (currentHR > 0) updateHRZone(currentHR);
+    if (rrIntervals.length > 0) updateHRChart();
+}
+
+function openSubjectPicker() {
+    renderSubjectPickerList();
+    document.getElementById('subjectPickerPanel').classList.add('active');
+    document.getElementById('subjectPickerOverlay').classList.add('active');
+}
+
+function closeSubjectPicker() {
+    document.getElementById('subjectPickerPanel').classList.remove('active');
+    document.getElementById('subjectPickerOverlay').classList.remove('active');
+}
+
+async function renderSubjectPickerList() {
+    const subjects = await loadSubjects();
+    const list = document.getElementById('subjectPickerList');
+    if (!list) return;
+
+    const anonSelected = currentSubjectId === null;
+    let html = `
+        <div class="subject-option ${anonSelected ? 'selected' : ''}"
+             onclick="selectSubject(null,'Anonymous',null)">
+            <div class="subject-option-icon">👤</div>
+            <div class="subject-option-info">
+                <div class="subject-option-name">Anonymous</div>
+                <div class="subject-option-sub">No subject assigned</div>
+            </div>
+            ${anonSelected ? '<div class="subject-option-check">✓</div>' : ''}
+        </div>
+    `;
+
+    subjects.sort((a, b) => a.name.localeCompare(b.name)).forEach(s => {
+        const isSel = currentSubjectId === s.id;
+        html += `
+            <div class="subject-option ${isSel ? 'selected' : ''}"
+                 onclick="selectSubject(${s.id},'${s.name.replace(/'/g,"\\'")}',${s.age})">
+                <div class="subject-option-icon" style="background:rgba(99,102,241,0.15);color:var(--accent-primary);font-weight:800;font-size:15px;">
+                    ${s.name.charAt(0).toUpperCase()}
+                </div>
+                <div class="subject-option-info">
+                    <div class="subject-option-name">${s.name}</div>
+                    <div class="subject-option-sub">${s.age} yrs</div>
+                </div>
+                ${isSel ? '<div class="subject-option-check">✓</div>' : ''}
+            </div>
+        `;
+    });
+
+    list.innerHTML = html;
+}
+
+async function addAndSelectSubject() {
+    const name = document.getElementById('newSubjectName').value.trim();
+    const age  = parseInt(document.getElementById('newSubjectAge').value) || 30;
+    if (!name) { alert('Please enter a subject name.'); return; }
+
+    const id = await saveSubject({ name, age, createdAt: new Date().toISOString() });
+    document.getElementById('newSubjectName').value = '';
+    document.getElementById('newSubjectAge').value  = '';
+
+    selectSubject(id, name, age);
+    if (currentTab === 'subjects') renderSubjects();
+    await updateHistoryBadge();
+}
+
+function openAddSubjectForm() {
+    openSubjectPicker();
+    setTimeout(() => {
+        const el = document.getElementById('newSubjectName');
+        if (el) el.focus();
+    }, 150);
+}
+
+async function openSubjectEdit(id) {
+    const subject = await loadSubject(id);
+    if (!subject) return;
+    document.getElementById('editSubjectId').value   = id;
+    document.getElementById('editSubjectName').value = subject.name;
+    document.getElementById('editSubjectAge').value  = subject.age;
+    document.getElementById('subjectEditPanel').classList.add('active');
+    document.getElementById('subjectEditOverlay').classList.add('active');
+}
+
+function closeSubjectEdit() {
+    document.getElementById('subjectEditPanel').classList.remove('active');
+    document.getElementById('subjectEditOverlay').classList.remove('active');
+}
+
+async function saveSubjectEdit() {
+    const id   = parseInt(document.getElementById('editSubjectId').value);
+    const name = document.getElementById('editSubjectName').value.trim();
+    const age  = parseInt(document.getElementById('editSubjectAge').value) || 30;
+    if (!name) return;
+    await saveSubject({ name, age }, id);
+    if (currentSubjectId === id) {
+        currentSubjectName = name;
+        currentSubjectAge  = age;
+        updateSubjectChipDisplay();
+    }
+    closeSubjectEdit();
+    await renderSubjects();
+}
+
+async function confirmDeleteSubject(id) {
+    const subject  = await loadSubject(id);
+    const sessions = await loadSessions();
+    const count    = sessions.filter(s => s.subjectId === id).length;
+    const msg = count > 0
+        ? `Delete "${subject.name}"? This subject has ${count} session(s). Sessions will remain but be unassigned.`
+        : `Delete "${subject.name}"?`;
+    if (!confirm(msg)) return;
+    if (currentSubjectId === id) selectSubject(null, 'Anonymous', null);
+    await deleteSubject(id);
+    await renderSubjects();
+    await updateHistoryBadge();
+}
+
+async function renderSubjects() {
+    const content = document.getElementById('subjectsContent');
+    if (!content) return;
+    try {
+        const [subjects, sessions] = await Promise.all([loadSubjects(), loadSessions()]);
+
+        const countEl = document.getElementById('subjectsCount');
+        if (countEl) countEl.textContent = `${subjects.length} subject${subjects.length !== 1 ? 's' : ''}`;
+
+        if (subjects.length === 0) {
+            content.innerHTML = `
+                <div class="history-empty" style="grid-column: 1 / -1;">
+                    <span class="empty-icon">👤</span>
+                    <p>No subjects added yet.<br>Click <strong>+ Add Subject</strong> to get started.</p>
+                </div>`;
+            return;
+        }
+
+        content.innerHTML = subjects.sort((a, b) => a.name.localeCompare(b.name)).map(s => {
+            const ss      = sessions.filter(x => x.subjectId === s.id);
+            const sriVals = ss.filter(x => x.sri > 0).map(x => x.sri);
+            const avgSRI  = sriVals.length ? Math.round(sriVals.reduce((a,b)=>a+b,0)/sriVals.length) : 0;
+            const rmssdVals = ss.filter(x => x.stats?.rmssd > 0).map(x => x.stats.rmssd);
+            const avgRMSSD  = rmssdVals.length ? (rmssdVals.reduce((a,b)=>a+b,0)/rmssdVals.length).toFixed(1) : null;
+            const last      = ss.sort((a,b) => b.timestamp - a.timestamp)[0];
+            const sriCls    = avgSRI >= 75 ? 'sri-excellent' : avgSRI >= 55 ? 'sri-good' : avgSRI >= 35 ? 'sri-fair' : avgSRI > 0 ? 'sri-poor' : '';
+            const isActive  = currentSubjectId === s.id;
+            return `
+            <div class="subject-card ${isActive ? 'subject-card--active' : ''}">
+                <div class="subject-card-header">
+                    <div class="subject-card-identity">
+                        <div class="subject-card-avatar">${s.name.charAt(0).toUpperCase()}</div>
+                        <div>
+                            <div class="subject-card-name">${s.name}</div>
+                            <div class="subject-card-meta">${s.age} yrs · ${ss.length} session${ss.length!==1?'s':''}</div>
+                        </div>
+                    </div>
+                    <div class="subject-card-actions">
+                        <button class="session-action-btn" onclick="openSubjectEdit(${s.id})" title="Edit">✏️</button>
+                        <button class="session-action-btn delete" onclick="confirmDeleteSubject(${s.id})" title="Delete">🗑️</button>
+                    </div>
+                </div>
+                <div class="subject-card-stats">
+                    <div class="session-stat">
+                        <div class="session-stat-label">Sessions</div>
+                        <div class="session-stat-value">${ss.length}</div>
+                    </div>
+                    <div class="session-stat">
+                        <div class="session-stat-label">Avg SRI</div>
+                        <div class="session-stat-value ${sriCls}">${avgSRI > 0 ? avgSRI : '--'}</div>
+                    </div>
+                    <div class="session-stat">
+                        <div class="session-stat-label">Avg RMSSD</div>
+                        <div class="session-stat-value">${avgRMSSD ? avgRMSSD : '--'}<span class="session-stat-unit">${avgRMSSD?'ms':''}</span></div>
+                    </div>
+                    <div class="session-stat">
+                        <div class="session-stat-label">Last</div>
+                        <div class="session-stat-value" style="font-size:0.65em;line-height:1.2">${last ? formatDate(last.date) : '--'}</div>
+                    </div>
+                </div>
+                <button class="btn subject-select-btn ${isActive ? 'btn-active-subject' : 'btn-secondary'}"
+                        onclick="selectSubject(${s.id},'${s.name.replace(/'/g,"\\'")}',${s.age});renderSubjects();">
+                    ${isActive ? '● Active Subject' : 'Set as Active Subject'}
+                </button>
+            </div>`;
+        }).join('');
+    } catch(e) {
+        console.error('renderSubjects failed:', e);
+    }
+}
+
+// ══════════════════════════════════════════════════════════
+//  SPRINT 5 — Recording Modes
+// ══════════════════════════════════════════════════════════
+
+// ── Mode bar availability ─────────────────────────────────
+function updateModesAvailability() {
+    const bar = document.getElementById('recordModeBar');
+    if (!bar) return;
+    const recording = isConnected && !!calibrationStartTime && !isCalibrating;
+    bar.style.display = recording ? '' : 'none';
+    if (!recording) {
+        exitFocusMode();
+        exitBiofeedbackMode();
+    }
+}
+
+// ── Focus mode ────────────────────────────────────────────
+function enterFocusMode() {
+    focusMode = true;
+    controlsPanel.classList.add('focus-hidden');
+    document.getElementById('chartsGrid').classList.add('focus-hidden');
+    document.getElementById('focusModeBtn').classList.add('active');
+    document.body.classList.add('focus-mode-active');
+}
+
+function exitFocusMode() {
+    if (!focusMode) return;
+    focusMode = false;
+    controlsPanel.classList.remove('focus-hidden');
+    document.getElementById('chartsGrid').classList.remove('focus-hidden');
+    document.getElementById('focusModeBtn').classList.remove('active');
+    document.body.classList.remove('focus-mode-active');
+}
+
+function toggleFocusMode() {
+    focusMode ? exitFocusMode() : enterFocusMode();
+}
+
+// ── Biofeedback mode ──────────────────────────────────────
+function enterBiofeedbackMode() {
+    biofeedbackMode = true;
+    document.getElementById('biofeedbackOverlay').style.display = 'flex';
+    document.getElementById('biofeedbackModeBtn').classList.add('active');
+    const nameEl = document.getElementById('biofeedbackSubjectName');
+    if (nameEl) nameEl.textContent = currentSubjectName !== 'Anonymous' ? currentSubjectName : '';
+    startBreathingCue();
+    updateBiofeedbackDisplay();
+}
+
+function exitBiofeedbackMode() {
+    if (!biofeedbackMode) return;
+    biofeedbackMode = false;
+    document.getElementById('biofeedbackOverlay').style.display = 'none';
+    document.getElementById('biofeedbackModeBtn').classList.remove('active');
+    stopBreathingCue();
+}
+
+function toggleBiofeedbackMode() {
+    biofeedbackMode ? exitBiofeedbackMode() : enterBiofeedbackMode();
+}
+
+function startBreathingCue() {
+    stopBreathingCue();
+    breathePhase = 'inhale';
+    breatheCount = 0;
+    renderBreatheCue();
+    biofeedbackTimer = setInterval(() => {
+        breathePhase = breathePhase === 'inhale' ? 'exhale' : 'inhale';
+        if (breathePhase === 'inhale') breatheCount++;
+        renderBreatheCue();
+    }, 5000);
+}
+
+function stopBreathingCue() {
+    if (biofeedbackTimer) { clearInterval(biofeedbackTimer); biofeedbackTimer = null; }
+}
+
+function renderBreatheCue() {
+    const textEl = document.getElementById('biofeedbackBreatheText');
+    const subEl  = document.getElementById('biofeedbackBreatheSub');
+    if (!textEl) return;
+    if (breathePhase === 'inhale') {
+        textEl.textContent = '↑ Inhale';
+        textEl.style.color = '#22d3ee';
+        if (subEl) subEl.textContent = 'through the nose · 5 seconds';
+    } else {
+        textEl.textContent = '↓ Exhale';
+        textEl.style.color = '#8b5cf6';
+        if (subEl) subEl.textContent = 'slowly through the mouth · 5 seconds';
+    }
+}
+
+function updateBiofeedbackDisplay() {
+    if (!biofeedbackMode) return;
+    const hrEl    = document.getElementById('biofeedbackHR');
+    const rmssdEl = document.getElementById('biofeedbackRMSSD');
+    const sriEl   = document.getElementById('biofeedbackSRI');
+    const zoneEl  = document.getElementById('biofeedbackZone');
+    const ringEl  = document.getElementById('biofeedbackRing');
+
+    if (hrEl)    hrEl.textContent    = currentHR > 0 ? currentHR : '--';
+    if (rmssdEl) rmssdEl.textContent = parseFloat(rmssdValue.textContent) > 0
+        ? parseFloat(rmssdValue.textContent).toFixed(1) : '--';
+    if (sriEl)   sriEl.textContent   = sriScore > 0 ? sriScore : '--';
+    if (zoneEl)  zoneEl.textContent  = hrZoneText.textContent || '—';
+
+    // Tint ring and SRI score based on current SRI
+    if (sriScore > 0 && ringEl) {
+        const c = sriScore >= 75 ? '#10b981'
+                : sriScore >= 55 ? '#22d3ee'
+                : sriScore >= 35 ? '#f59e0b'
+                : '#ef4444';
+        ringEl.style.borderColor = c;
+        ringEl.style.boxShadow   = `0 0 60px ${c}30, inset 0 0 40px ${c}08`;
+    }
+}
+
+// ── Monitor window (subject-facing popup) ─────────────────
+function openMonitorWindow() {
+    if (monitorWin && !monitorWin.closed) { monitorWin.close(); }
+
+    const html = generateMonitorHTML();
+    const blob = new Blob([html], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    monitorWin = window.open(url, 'CardioTrace_Monitor',
+        'width=480,height=680,toolbar=no,menubar=no,scrollbars=no,resizable=yes,location=no');
+
+    if (!monitorWin) {
+        alert('Popup blocked — please allow popups for this site and try again.');
+        URL.revokeObjectURL(url);
+        return;
+    }
+
+    if (monitorChannel) monitorChannel.close();
+    monitorChannel = new BroadcastChannel('cardiotrace-monitor');
+    setTimeout(() => URL.revokeObjectURL(url), 8000);
+    setTimeout(() => broadcastMonitorUpdate(), 600);
+
+    document.getElementById('monitorWindowBtn').classList.add('active');
+    monitorWin.addEventListener('beforeunload', () => {
+        document.getElementById('monitorWindowBtn').classList.remove('active');
+        if (monitorChannel) { monitorChannel.close(); monitorChannel = null; }
+        monitorWin = null;
+    });
+}
+
+function broadcastMonitorUpdate() {
+    if (!monitorChannel) return;
+    const rmssd = parseFloat(rmssdValue.textContent) || 0;
+    monitorChannel.postMessage({
+        hr:          currentHR,
+        sri:         sriScore,
+        rmssd,
+        zone:        hrZoneText.textContent || '',
+        subjectName: currentSubjectName,
+        isConnected,
+        isCalibrating
+    });
+}
+
+function generateMonitorHTML() {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardioTrace — Subject Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#070d1a;--card:#111827;--text:#f1f5f9;--sub:#64748b;
+  --accent:#6366f1;--teal:#22d3ee;--success:#10b981;--warn:#f59e0b;--danger:#ef4444}
+body{background:var(--bg);color:var(--text);
+  font-family:'Inter',system-ui,sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  padding:32px 24px;gap:24px;overflow:hidden;
+  background-image:radial-gradient(ellipse at 50% 30%,rgba(99,102,241,.08) 0%,transparent 60%)}
+.subject-label{font-size:11px;font-weight:700;letter-spacing:3px;
+  text-transform:uppercase;color:var(--sub);min-height:16px;text-align:center}
+.sri-block{display:flex;flex-direction:column;align-items:center;gap:10px}
+.sri-score{font-size:clamp(80px,20vw,120px);font-weight:900;letter-spacing:-4px;
+  line-height:1;transition:color .6s ease;color:var(--teal)}
+.sri-tag{font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--sub)}
+.sri-status-pill{padding:6px 20px;border-radius:20px;font-size:13px;font-weight:600;
+  background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);color:var(--accent);
+  transition:all .5s ease;text-align:center}
+.metrics{display:flex;gap:12px;width:100%;max-width:420px}
+.metric{flex:1;background:var(--card);border-radius:14px;padding:16px 12px;
+  text-align:center;border:1px solid rgba(255,255,255,.06)}
+.metric-label{font-size:9px;font-weight:700;text-transform:uppercase;
+  letter-spacing:1.5px;color:var(--sub);margin-bottom:8px}
+.metric-value{font-size:clamp(28px,8vw,42px);font-weight:900;letter-spacing:-1px;line-height:1}
+.metric-unit{font-size:10px;color:var(--sub);margin-top:4px}
+.zone-pill{font-size:10px;font-weight:700;padding:3px 10px;border-radius:6px;
+  background:rgba(34,211,238,.1);border:1px solid rgba(34,211,238,.2);color:var(--teal);
+  margin-top:6px;display:inline-block}
+.status-row{display:flex;align-items:center;gap:7px;
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--sub)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--teal);flex-shrink:0}
+.recording .dot{animation:pulse 2s ease-in-out infinite}
+.calibrating .dot{background:var(--warn)}
+.calibrating .dot{animation:pulse 1s ease-in-out infinite}
+.disconnected .dot{background:#374151;animation:none}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.9)}}
+</style>
+</head>
+<body>
+<div class="subject-label" id="subjectEl"></div>
+<div class="sri-block">
+  <div class="sri-score" id="sriEl">--</div>
+  <div class="sri-tag">Stress Recovery Index</div>
+  <div class="sri-status-pill" id="sriStatusEl">Waiting for data</div>
+</div>
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-label">Heart Rate</div>
+    <div class="metric-value" id="hrEl" style="color:#f43f5e">--</div>
+    <div class="metric-unit">bpm</div>
+    <div id="zoneEl" class="zone-pill" style="display:none"></div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">RMSSD</div>
+    <div class="metric-value" id="rmssdEl" style="color:#22d3ee">--</div>
+    <div class="metric-unit">ms</div>
+  </div>
+</div>
+<div class="status-row disconnected" id="statusRow">
+  <div class="dot"></div><span id="statusText">Waiting for connection…</span>
+</div>
+<script>
+const bc=new BroadcastChannel('cardiotrace-monitor');
+const COLORS={excellent:'#10b981',good:'#22d3ee',fair:'#f59e0b',poor:'#ef4444'};
+function getSRIClass(s){return s>=75?'excellent':s>=55?'good':s>=35?'fair':s>0?'poor':'';}
+function getSRILabel(s){return s>=75?'Excellent Recovery':s>=55?'Good Recovery':s>=35?'Fair Recovery':s>0?'Poor Recovery':'Waiting for data';}
+bc.onmessage=(e)=>{
+  const d=e.data;
+  document.getElementById('subjectEl').textContent=d.subjectName&&d.subjectName!=='Anonymous'?d.subjectName:'';
+  document.getElementById('hrEl').textContent=d.hr>0?d.hr:'--';
+  document.getElementById('rmssdEl').textContent=d.rmssd>0?d.rmssd.toFixed(1):'--';
+  const ze=document.getElementById('zoneEl');
+  if(d.zone){ze.textContent=d.zone;ze.style.display='';}
+  const score=d.sri||0;
+  const cls=getSRIClass(score);
+  const sriEl=document.getElementById('sriEl');
+  sriEl.textContent=score>0?score:'--';
+  sriEl.style.color=cls?COLORS[cls]:'var(--teal)';
+  const pill=document.getElementById('sriStatusEl');
+  pill.textContent=getSRILabel(score);
+  if(cls){pill.style.background=COLORS[cls]+'1a';pill.style.borderColor=COLORS[cls]+'44';pill.style.color=COLORS[cls];}
+  const row=document.getElementById('statusRow');
+  const txt=document.getElementById('statusText');
+  if(d.isCalibrating){row.className='status-row calibrating';txt.textContent='Calibrating…';}
+  else if(d.isConnected){row.className='status-row recording';txt.textContent='Recording';}
+  else{row.className='status-row disconnected';txt.textContent='Disconnected';}
+};
+window.addEventListener('beforeunload',()=>bc.close());
+</script>
+</body>
+</html>`;
+}
+
+// ── Shared metric computation ─────────────────────────────
+// Recomputes time-domain HRV metrics from full RR array at
+// export time — more complete than the stored 60-sec window.
+function computeSessionMetrics(session) {
+    const rr = session.rrIntervals || [];
+    const n  = rr.length;
+    if (n === 0) return null;
+
+    const mean_rr = rr.reduce((a, b) => a + b, 0) / n;
+    const sdnn    = Math.sqrt(rr.reduce((s, v) => s + (v - mean_rr) ** 2, 0) / n);
+
+    let rmssd = 0, nn50 = 0;
+    if (n > 1) {
+        let sqSum = 0;
+        for (let i = 1; i < n; i++) {
+            const d = rr[i] - rr[i - 1];
+            sqSum += d * d;
+            if (Math.abs(d) > 50) nn50++;
+        }
+        rmssd = Math.sqrt(sqSum / (n - 1));
+    }
+
+    const pnn50   = n > 1 ? (nn50 / (n - 1)) * 100 : 0;
+    const hrVals  = rr.map(r => 60000 / r);
+    const mean_hr = hrVals.reduce((a, b) => a + b, 0) / hrVals.length;
+    const min_hr  = Math.min(...hrVals);
+    const rawN    = (session.rawRRIntervals || []).length || n;
+    const dq      = rawN > 0 ? parseFloat((n / rawN * 100).toFixed(1)) : 100;
+
+    return { mean_rr, sdnn, rmssd, pnn50, mean_hr, min_hr, dq, n, rawN };
+}
+
+// ── Filter helpers ────────────────────────────────────────
+async function getExportFilteredSessions() {
+    const sessions   = await loadSessions();
+    const subjectVal = document.getElementById('exportSubjectFilter')?.value || '';
+    const tagVal     = document.getElementById('exportTagFilter')?.value || '';
+    const sortVal    = document.getElementById('exportSortFilter')?.value || 'newest';
+
+    let filtered = sessions.filter(s => {
+        const matchSub = !subjectVal ||
+            (subjectVal === 'anonymous' ? !s.subjectId : String(s.subjectId) === subjectVal);
+        const matchTag = !tagVal || (s.tags || []).includes(tagVal);
+        return matchSub && matchTag;
+    });
+
+    filtered.sort((a, b) => {
+        if (sortVal === 'oldest')   return a.timestamp - b.timestamp;
+        if (sortVal === 'longest')  return b.duration  - a.duration;
+        if (sortVal === 'shortest') return a.duration  - b.duration;
+        return b.timestamp - a.timestamp;
+    });
+
+    return filtered;
+}
+
+async function updateExportFilters() {
+    const [sessions, subjects] = await Promise.all([loadSessions(), loadSubjects()]);
+
+    const subEl = document.getElementById('exportSubjectFilter');
+    const tagEl = document.getElementById('exportTagFilter');
+    if (!subEl || !tagEl) return;
+
+    const prevSub = subEl.value;
+    const prevTag = tagEl.value;
+
+    subEl.innerHTML = '<option value="">All Subjects</option><option value="anonymous">Anonymous</option>' +
+        subjects.sort((a, b) => a.name.localeCompare(b.name))
+            .map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+
+    const allTags = new Set();
+    sessions.forEach(s => (s.tags || []).forEach(t => allTags.add(t)));
+    tagEl.innerHTML = '<option value="">All Tags</option>' +
+        Array.from(allTags).sort().map(t => `<option value="${t}">${t}</option>`).join('');
+
+    subEl.value = prevSub;
+    tagEl.value = prevTag;
+}
+
+// ── Tab render ────────────────────────────────────────────
+async function renderExportTab() {
+    await updateExportFilters();
+
+    const filtered = await getExportFilteredSessions();
+    const list     = document.getElementById('exportSessionList');
+    if (!list) return;
+
+    if (filtered.length === 0) {
+        list.innerHTML = `<div class="history-empty" style="padding:60px 20px;">
+            <span class="empty-icon">💾</span><p>No sessions found</p></div>`;
+        updateExportSelectionUI();
+        return;
+    }
+
+    const rows = filtered.map(s => {
+        const isSel    = exportSelectedIds.has(s.id);
+        const sriClass = s.sri >= 75 ? 'sri-excellent' : s.sri >= 55 ? 'sri-good'
+                       : s.sri >= 35 ? 'sri-fair'      : s.sri > 0  ? 'sri-poor' : '';
+        const tags     = (s.tags || []).map(t => `<span class="session-tag">${t}</span>`).join('');
+        const subHtml  = s.subjectName && s.subjectName !== 'Anonymous'
+            ? `<span class="session-subject-chip" style="font-size:11px;">👤 ${s.subjectName}</span>`
+            : `<span style="color:var(--text-tertiary)">—</span>`;
+
+        return `
+        <tr class="export-session-row ${isSel ? 'is-selected' : ''}" data-id="${s.id}">
+            <td class="export-col-check">
+                <input type="checkbox" class="export-row-check" data-id="${s.id}" ${isSel ? 'checked' : ''}>
+            </td>
+            <td class="export-col-name">
+                <div class="export-session-name">${s.filename || 'polar-h10-data'}</div>
+                ${s.protocolName ? `<span class="export-proto-tag">🔬 ${s.protocolName}</span>` : ''}
+            </td>
+            <td class="export-col-subject">${subHtml}</td>
+            <td class="export-col-date">${formatDate(s.date)}</td>
+            <td>${formatDuration(s.duration)}</td>
+            <td class="export-col-num">${s.stats?.samples || s.rrIntervals?.length || '—'}</td>
+            <td class="export-col-num">${s.stats?.rmssd ? s.stats.rmssd.toFixed(1) : '—'}</td>
+            <td class="export-col-num ${sriClass}" style="font-weight:700;">${s.sri > 0 ? s.sri : '—'}</td>
+            <td>${tags || '<span style="color:var(--text-tertiary)">—</span>'}</td>
+        </tr>`;
+    }).join('');
+
+    list.innerHTML = `
+    <table class="export-session-table">
+        <thead>
+            <tr>
+                <th class="export-col-check"></th>
+                <th>Session · Protocol</th>
+                <th>Subject</th>
+                <th>Date</th>
+                <th>Duration</th>
+                <th>Samples</th>
+                <th>RMSSD</th>
+                <th>SRI</th>
+                <th>Tags</th>
+            </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+    </table>`;
+
+    // Checkbox bindings — toggle without full re-render
+    list.querySelectorAll('.export-row-check').forEach(cb => {
+        cb.addEventListener('change', e => { e.stopPropagation(); toggleExportSession(parseInt(cb.dataset.id)); });
+    });
+    list.querySelectorAll('.export-session-row').forEach(row => {
+        row.addEventListener('click', e => {
+            if (e.target.type === 'checkbox') return;
+            toggleExportSession(parseInt(row.dataset.id));
+        });
+    });
+
+    updateExportSelectionUI();
+}
+
+function toggleExportSession(id) {
+    exportSelectedIds.has(id) ? exportSelectedIds.delete(id) : exportSelectedIds.add(id);
+
+    const row = document.querySelector(`.export-session-row[data-id="${id}"]`);
+    const cb  = document.querySelector(`.export-row-check[data-id="${id}"]`);
+    if (row) row.classList.toggle('is-selected', exportSelectedIds.has(id));
+    if (cb)  cb.checked = exportSelectedIds.has(id);
+    updateExportSelectionUI();
+}
+
+function updateExportSelectionUI() {
+    const n      = exportSelectedIds.size;
+    const countEl = document.getElementById('exportSelectedCount');
+    if (countEl) {
+        countEl.textContent = n === 0 ? 'None selected' : `${n} selected`;
+        countEl.classList.toggle('has-selection', n > 0);
+    }
+    const off = n === 0;
+    ['exportSummaryBtn', 'exportZipBtn', 'exportJsonBtn'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = off;
+    });
+}
+
+async function selectAllExportSessions() {
+    const filtered = await getExportFilteredSessions();
+    filtered.forEach(s => exportSelectedIds.add(s.id));
+    renderExportTab();
+}
+
+function deselectAllExportSessions() {
+    exportSelectedIds.clear();
+    renderExportTab();
+}
+
+// ── Aggregate Summary CSV ────────────────────────────────
+async function exportSelectedSummaryCSV() {
+    if (exportSelectedIds.size === 0) return;
+    const btn = document.getElementById('exportSummaryBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Computing...';
+
+    try {
+        const [allSessions, subjects] = await Promise.all([loadSessions(), loadSubjects()]);
+        const sessions = allSessions.filter(s => exportSelectedIds.has(s.id));
+        const ageMap   = Object.fromEntries(subjects.map(s => [s.id, s.age]));
+
+        const headers = [
+            'session_id','date','filename','subject_name','subject_age','protocol_name',
+            'duration_s','n_rr','n_rr_raw','data_quality_pct',
+            'mean_rr_ms','sdnn_ms','rmssd_ms','pnn50_pct',
+            'mean_hr_bpm','min_hr_bpm','peak_hr_bpm',
+            'lf_hf_ratio',
+            'sri_score','sri_rmssd_ms','sri_lf_hf','sri_hr_recovery_pct',
+            'n_events','event_types','tags'
+        ];
+
+        const esc = v => {
+            if (v == null || v === '') return '';
+            const s = String(v);
+            return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+        };
+        const f = (v, d = 1) => (v != null && isFinite(v)) ? parseFloat(v.toFixed(d)) : '';
+
+        const rows = sessions.map(s => {
+            const m    = computeSessionMetrics(s);
+            const age  = s.subjectId ? (ageMap[s.subjectId] ?? '') : '';
+            const evts = [...new Set((s.eventMarkers || []).map(e => e.type))].join(';');
+            return [
+                s.id,
+                new Date(s.timestamp).toISOString().slice(0, 19).replace('T', ' '),
+                s.filename || 'polar-h10-data',
+                s.subjectName || 'Anonymous',
+                age,
+                s.protocolName || '',
+                s.duration || '',
+                m ? m.n    : '', m ? m.rawN : '', m ? m.dq : '',
+                m ? f(m.mean_rr) : '', m ? f(m.sdnn) : '',
+                m ? f(m.rmssd)   : '', m ? f(m.pnn50) : '',
+                m ? f(m.mean_hr) : '', m ? f(m.min_hr) : '',
+                s.peakHR || '',
+                s.sriComponents?.lfhf       ? f(s.sriComponents.lfhf, 2)       : '',
+                s.sri > 0 ? s.sri           : '',
+                s.sriComponents?.rmssd      ? f(s.sriComponents.rmssd)          : '',
+                s.sriComponents?.lfhf       ? f(s.sriComponents.lfhf, 2)        : '',
+                s.sriComponents?.hrRecovery ? f(s.sriComponents.hrRecovery)     : '',
+                (s.eventMarkers || []).length,
+                evts,
+                (s.tags || []).join(';')
+            ].map(esc).join(',');
+        });
+
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const csv = [
+            `# CardioTrace — Aggregate HRV Summary Export`,
+            `# Generated: ${new Date().toISOString()}`,
+            `# Sessions: ${sessions.length}  |  Columns: ${headers.length}`,
+            `#`,
+            headers.join(','),
+            ...rows
+        ].join('\n');
+
+        downloadFile(csv, `cardiotrace_aggregate_${dateStr}.csv`, 'text/csv');
+        console.log(`✓ Aggregate CSV: ${sessions.length} sessions, ${headers.length} columns`);
+    } finally {
+        btn.textContent = 'Export CSV';
+        updateExportSelectionUI();
+    }
+}
+
+// ── Raw Intervals ZIP ────────────────────────────────────
+async function exportSelectedZip() {
+    if (exportSelectedIds.size === 0) return;
+    const btn    = document.getElementById('exportZipBtn');
+    const format = document.getElementById('exportZipFormat').value;
+    btn.disabled = true;
+    btn.textContent = '⏳ Packing...';
+
+    try {
+        const allSessions = await loadSessions();
+        const sessions    = allSessions.filter(s => exportSelectedIds.has(s.id));
+        const zip         = new JSZip();
+
+        for (const s of sessions) {
+            const d    = new Date(s.startTime || s.timestamp);
+            const base = `${s.filename || 'polar-h10'}_${d.toISOString().slice(0, 16).replace(':', '-')}`;
+
+            if (format === 'txt') {
+                zip.file(`${base}.txt`, s.rrIntervals.map(r => r.toFixed(3)).join('\n'));
+            } else {
+                let csv = generateMetadataHeader({
+                    filename: s.filename, startTime: s.startTime,
+                    tags: s.tags || [], rrCount: s.rrIntervals.length,
+                    rawRRCount: s.rawRRIntervals?.length || s.rrIntervals.length,
+                    eventCount: s.eventMarkers?.length || 0, includeRaw: false
+                });
+                csv += 'Timestamp (s),RR Interval (ms),Event Type,Annotation\n';
+                for (let i = 0; i < s.rrIntervals.length; i++) {
+                    const ts = s.timestamps[i];
+                    const rr = s.rrIntervals[i];
+                    const ev = s.eventMarkers?.find(e => Math.abs(e.time - ts) < 0.5);
+                    csv += `${ts.toFixed(3)},${rr.toFixed(3)},${ev?.type || ''},${(ev?.annotation || '').replace(/,/g, ';')}\n`;
+                }
+                zip.file(`${base}.csv`, csv);
+            }
+        }
+
+        const blob    = await zip.generateAsync({ type: 'blob' });
+        const zipName = `cardiotrace_sessions_${new Date().toISOString().slice(0, 10)}.zip`;
+        const url     = URL.createObjectURL(blob);
+        const a       = Object.assign(document.createElement('a'), { href: url, download: zipName });
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+        console.log(`✓ ZIP: ${sessions.length} sessions as .${format}`);
+    } finally {
+        btn.textContent = 'Download ZIP';
+        updateExportSelectionUI();
+    }
+}
+
+// ── Structured JSON ───────────────────────────────────────
+async function exportSelectedJSON() {
+    if (exportSelectedIds.size === 0) return;
+    const btn = document.getElementById('exportJsonBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Building...';
+
+    try {
+        const [allSessions, subjects] = await Promise.all([loadSessions(), loadSubjects()]);
+        const sessions = allSessions.filter(s => exportSelectedIds.has(s.id));
+        const ageMap   = Object.fromEntries(subjects.map(s => [s.id, s.age]));
+        const f = (v, d = 1) => (v != null && isFinite(v)) ? parseFloat(v.toFixed(d)) : null;
+
+        const payload = {
+            exported_at: new Date().toISOString(),
+            generator:   'CardioTrace',
+            n_sessions:  sessions.length,
+            sessions: sessions.map(s => {
+                const m = computeSessionMetrics(s);
+                return {
+                    id: s.id,
+                    filename: s.filename,
+                    date: new Date(s.timestamp).toISOString(),
+                    duration_s: s.duration,
+                    subject: {
+                        name: s.subjectName || null,
+                        age:  s.subjectId ? (ageMap[s.subjectId] ?? null) : null
+                    },
+                    protocol: s.protocolName || null,
+                    tags: s.tags || [],
+                    time_domain: m ? {
+                        n_rr:             m.n,
+                        n_rr_raw:         m.rawN,
+                        data_quality_pct: m.dq,
+                        mean_rr_ms:       f(m.mean_rr),
+                        sdnn_ms:          f(m.sdnn),
+                        rmssd_ms:         f(m.rmssd),
+                        pnn50_pct:        f(m.pnn50),
+                        mean_hr_bpm:      f(m.mean_hr),
+                        min_hr_bpm:       f(m.min_hr),
+                        peak_hr_bpm:      s.peakHR || null
+                    } : null,
+                    frequency_domain: {
+                        lf_hf_ratio: s.sriComponents?.lfhf
+                            ? f(s.sriComponents.lfhf, 2) : null
+                    },
+                    sri: {
+                        score:              s.sri > 0 ? s.sri : null,
+                        rmssd_component_ms: s.sriComponents?.rmssd
+                            ? f(s.sriComponents.rmssd) : null,
+                        lf_hf_component:    s.sriComponents?.lfhf
+                            ? f(s.sriComponents.lfhf, 2) : null,
+                        hr_recovery_pct:    s.sriComponents?.hrRecovery
+                            ? f(s.sriComponents.hrRecovery) : null
+                    },
+                    events: (s.eventMarkers || []).map(e => ({
+                        time_s: parseFloat(e.time.toFixed(3)),
+                        type:   e.type,
+                        note:   e.annotation || null
+                    }))
+                };
+            })
+        };
+
+        const dateStr = new Date().toISOString().slice(0, 10);
+        downloadFile(JSON.stringify(payload, null, 2),
+            `cardiotrace_export_${dateStr}.json`, 'application/json');
+        console.log(`✓ JSON: ${sessions.length} sessions exported`);
+    } finally {
+        btn.textContent = 'Export JSON';
+        updateExportSelectionUI();
+    }
+}
+
+function linearRegression(xs, ys) {
+    const n = xs.length;
+    if (n < 2) return { slope: 0, intercept: ys[0] || 0 };
+    const sumX  = xs.reduce((a,b) => a+b, 0);
+    const sumY  = ys.reduce((a,b) => a+b, 0);
+    const sumXY = xs.reduce((s,x,i) => s + x * ys[i], 0);
+    const sumX2 = xs.reduce((s,x) => s + x*x, 0);
+    const denom = n*sumX2 - sumX*sumX;
+    if (denom === 0) return { slope: 0, intercept: sumY/n };
+    const slope = (n*sumXY - sumX*sumY) / denom;
+    return { slope, intercept: (sumY - slope*sumX) / n };
+}
+
+// ── Analytics helpers ─────────────────────────────────────
+
+async function loadFilteredAnalyzeSessions() {
+    const sessions = await loadSessions();
+    const subjectVal = document.getElementById('analyzeSubjectFilter')?.value || '';
+    if (!subjectVal) return sessions;
+    if (subjectVal === 'anonymous') return sessions.filter(s => !s.subjectId);
+    return sessions.filter(s => String(s.subjectId) === subjectVal);
+}
+
+async function updateAnalyzeSubjectFilter() {
+    const el = document.getElementById('analyzeSubjectFilter');
+    if (!el) return;
+    const subjects = await loadSubjects();
+    el.innerHTML = '<option value="">All Subjects</option>' +
+        '<option value="anonymous">Anonymous</option>' +
+        subjects.sort((a,b) => a.name.localeCompare(b.name))
+            .map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+}
+
+// ── Analyze tab dispatcher ────────────────────────────────
+
+async function renderAnalyzeTab() {
+    await updateAnalyzeSubjectFilter();
+    switchAnalyzeSubtab(analyzeCurrentSubtab);
+}
+
+function switchAnalyzeSubtab(name) {
+    analyzeCurrentSubtab = name;
+    document.querySelectorAll('.analyze-subtab').forEach(btn =>
+        btn.classList.toggle('is-active', btn.dataset.subtab === name));
+    document.querySelectorAll('.analyze-section').forEach(sec =>
+        sec.classList.toggle('is-active', sec.id === `analyze-${name}`));
+    if (name === 'trends')     renderTrendsView();
+    if (name === 'comparison') renderComparisonView();
+    if (name === 'summary')    renderSummaryView();
+}
+
+// ── Trends view ───────────────────────────────────────────
+
+async function renderTrendsView() {
+    const sessions = await loadFilteredAnalyzeSessions();
+
+    const emptyHtml = `<div class="history-empty" style="min-height:160px;">
+        <span class="empty-icon">📊</span><p>No sessions found</p></div>`;
+
+    if (sessions.length === 0) {
+        ['analyzeChartSRI','analyzeChartRMSSD','analyzeChartLFHF']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = emptyHtml; });
+        return;
+    }
+
+    sessions.sort((a,b) => a.timestamp - b.timestamp);
+
+    // Assign one color per subject
+    const subjectKeys = [...new Set(sessions.map(s => s.subjectId ? String(s.subjectId) : 'anon'))];
+    const colorMap = Object.fromEntries(subjectKeys.map((k,i) => [k, TRACE_COLORS[i % TRACE_COLORS.length]]));
+
+    const cfg = { responsive: true, displayModeBar: false };
+    const baseLayout = {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        margin: { t: 10, r: 20, l: 55, b: 40 },
+        autosize: true,
+        font: { color: chartColor, family: 'Inter, sans-serif', size: 11 },
+        xaxis: { showgrid: false, zeroline: false, color: chartColor, type: 'date' },
+        yaxis: { showgrid: false, zeroline: false, color: chartColor },
+        legend: { bgcolor: 'rgba(0,0,0,0)', font: { size: 11 } },
+        hovermode: 'closest'
+    };
+
+    function buildTraces(metricFn, yLabel) {
+        const traces = [];
+        subjectKeys.forEach(key => {
+            const ss    = sessions.filter(s => (s.subjectId ? String(s.subjectId) : 'anon') === key);
+            const color = colorMap[key];
+            const label = ss[0]?.subjectName || 'Anonymous';
+            const xs    = ss.map(s => new Date(s.timestamp).toISOString().slice(0,10));
+            const ys    = ss.map(metricFn);
+
+            traces.push({
+                x: xs, y: ys,
+                type: 'scatter', mode: 'lines+markers', name: label,
+                line: { color, width: 2 },
+                marker: { color, size: 8, line: { color: 'rgba(255,255,255,0.8)', width: 1.5 } },
+                connectgaps: false,
+                hovertemplate: `%{x}<br>${yLabel}: <b>%{y:.1f}</b><extra>${label}</extra>`
+            });
+
+            // Trend line — needs ≥3 valid points
+            const pairs = ss
+                .map((s,i) => ({ x: s.timestamp, y: metricFn(s) }))
+                .filter(p => p.y != null && isFinite(p.y) && p.y > 0);
+            if (pairs.length >= 3) {
+                const reg  = linearRegression(pairs.map(p => p.x), pairs.map(p => p.y));
+                const tYs  = pairs.map(p => reg.slope * p.x + reg.intercept);
+                const tXs  = pairs.map(p => new Date(p.x).toISOString().slice(0,10));
+                traces.push({
+                    x: tXs, y: tYs,
+                    type: 'scatter', mode: 'lines', name: `${label} trend`,
+                    line: { color, width: 1.5, dash: 'dash' },
+                    showlegend: false, hoverinfo: 'skip'
+                });
+            }
+        });
+        return traces;
+    }
+
+    Plotly.react('analyzeChartSRI',
+        buildTraces(s => s.sri > 0 ? s.sri : null, 'SRI'),
+        { ...baseLayout, yaxis: { ...baseLayout.yaxis, title: 'SRI', range: [0, 105] } }, cfg);
+
+    Plotly.react('analyzeChartRMSSD',
+        buildTraces(s => s.stats?.rmssd > 0 ? Math.round(s.stats.rmssd * 10) / 10 : null, 'RMSSD (ms)'),
+        { ...baseLayout, yaxis: { ...baseLayout.yaxis, title: 'RMSSD (ms)' } }, cfg);
+
+    Plotly.react('analyzeChartLFHF',
+        buildTraces(s => s.sriComponents?.lfhf > 0 ? Math.round(s.sriComponents.lfhf * 100) / 100 : null, 'LF/HF'),
+        { ...baseLayout, yaxis: { ...baseLayout.yaxis, title: 'LF/HF Ratio' } }, cfg);
+}
+
+// ── Comparison view ───────────────────────────────────────
+
+async function renderComparisonView() {
+    const sessions = await loadSessions();
+    sessions.sort((a,b) => b.timestamp - a.timestamp);
+    const recent = sessions.slice(0, 40);
+
+    const list = document.getElementById('comparisonSessionList');
+    if (!list) return;
+
+    const selectedArr = Array.from(comparisonSelectedIds);
+
+    list.innerHTML = recent.map(s => {
+        const isSel  = comparisonSelectedIds.has(s.id);
+        const colIdx = selectedArr.indexOf(s.id);
+        const color  = isSel ? TRACE_COLORS[colIdx % TRACE_COLORS.length] : null;
+        return `
+        <div class="comparison-session-item ${isSel ? 'selected' : ''}"
+             data-id="${s.id}" onclick="toggleComparisonSession(${s.id})">
+            <input type="checkbox" ${isSel ? 'checked' : ''}
+                   onclick="event.stopPropagation();toggleComparisonSession(${s.id})">
+            <div class="comparison-session-color"
+                 style="background:${color || 'transparent'};border:${color ? 'none' : '1px solid var(--border-color)'};">
+            </div>
+            <div class="comparison-session-info">
+                <div class="comparison-session-name">${s.filename || 'Session'}</div>
+                <div class="comparison-session-meta">
+                    ${formatDate(s.date)} · ${formatDuration(s.duration)}
+                    ${s.subjectName && s.subjectName !== 'Anonymous' ? ` · ${s.subjectName}` : ''}
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+
+    renderComparisonChart();
+}
+
+function toggleComparisonSession(id) {
+    if (comparisonSelectedIds.has(id)) {
+        comparisonSelectedIds.delete(id);
+    } else {
+        if (comparisonSelectedIds.size >= 6) {
+            alert('You can compare up to 6 sessions at a time.');
+            return;
+        }
+        comparisonSelectedIds.add(id);
+    }
+    renderComparisonView();
+}
+
+async function renderComparisonChart() {
+    const chartEl = document.getElementById('analyzeChartComparison');
+    const labelEl = document.getElementById('comparisonChartLabel');
+    if (!chartEl) return;
+
+    if (comparisonSelectedIds.size === 0) {
+        chartEl.innerHTML = `<div class="history-empty" style="min-height:280px;">
+            <span class="empty-icon">⊞</span>
+            <p>Select sessions from the list to compare</p></div>`;
+        if (labelEl) labelEl.textContent = 'Select sessions to compare';
+        return;
+    }
+
+    const metric       = document.getElementById('comparisonMetric')?.value || 'rmssd';
+    const metricLabels = {
+        rmssd: 'Rolling RMSSD (ms)',
+        rr:    'RR Interval (ms)',
+        hr:    'Heart Rate (bpm)'
+    };
+
+    const selectedArr = Array.from(comparisonSelectedIds);
+    const sessions    = (await Promise.all(selectedArr.map(id => loadSession(id)))).filter(Boolean);
+
+    const traces = sessions.map((s, i) => {
+        const color = TRACE_COLORS[i % TRACE_COLORS.length];
+        let xs = s.timestamps || [];
+        let ys;
+
+        if (metric === 'rr') {
+            ys = s.rrIntervals || [];
+        } else if (metric === 'hr') {
+            ys = (s.rrIntervals || []).map(rr => Math.round(60000 / rr));
+        } else {
+            // Compute rolling 60s RMSSD on stored intervals
+            const rr = s.rrIntervals || [];
+            const ts = s.timestamps  || [];
+            const rmssdX = [], rmssdY = [];
+            for (let i = 1; i < rr.length; i++) {
+                const t = ts[i];
+                if (t < 30) continue;
+                const ws = t - 60;
+                const win = rr.filter((_, j) => ts[j] >= ws && j <= i);
+                if (win.length < 2) continue;
+                let sq = 0;
+                for (let k = 1; k < win.length; k++) sq += (win[k] - win[k-1]) ** 2;
+                rmssdX.push(t);
+                rmssdY.push(Math.sqrt(sq / (win.length - 1)));
+            }
+            xs = rmssdX;
+            ys = rmssdY;
+        }
+
+        return {
+            x: xs, y: ys,
+            type: 'scatter', mode: 'lines',
+            name: s.filename || `Session ${s.id}`,
+            line: { color, width: 2 },
+            hovertemplate: `t: %{x:.1f}s<br>${metricLabels[metric]}: <b>%{y:.1f}</b><extra>${s.filename || 'Session'}</extra>`
+        };
+    });
+
+    if (labelEl) {
+        labelEl.textContent = `${metricLabels[metric]} — ${sessions.length} session${sessions.length > 1 ? 's' : ''} overlaid`;
+    }
+
+    Plotly.react('analyzeChartComparison', traces, {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor:  'rgba(0,0,0,0)',
+        margin: { t: 10, r: 20, l: 55, b: 40 },
+        autosize: true,
+        font: { color: chartColor, family: 'Inter, sans-serif', size: 11 },
+        xaxis: { title: 'Time (s)', showgrid: false, zeroline: false, color: chartColor },
+        yaxis: { title: metricLabels[metric], showgrid: false, zeroline: false, color: chartColor },
+        legend: { bgcolor: 'rgba(0,0,0,0)', font: { size: 11 } },
+        hovermode: 'x unified'
+    }, { responsive: true, displayModeBar: false });
+}
+
+// ── Summary view ──────────────────────────────────────────
+
+async function renderSummaryView() {
+    const content = document.getElementById('analyzeSummaryContent');
+    if (!content) return;
+
+    const sessions = await loadFilteredAnalyzeSessions();
+    if (sessions.length === 0) {
+        content.innerHTML = `<div class="history-empty">
+            <span class="empty-icon">📊</span><p>No sessions found</p></div>`;
+        return;
+    }
+
+    const subjects = await loadSubjects();
+    const subjectNameMap = Object.fromEntries(subjects.map(s => [s.id, s.name]));
+
+    // Build row groups: All Sessions + one per subject key
+    const byKey = {};
+    sessions.forEach(s => {
+        const key   = s.subjectId ? String(s.subjectId) : 'anon';
+        const label = s.subjectName || 'Anonymous';
+        if (!byKey[key]) byKey[key] = { label, initial: label.charAt(0).toUpperCase(), ss: [] };
+        byKey[key].ss.push(s);
+    });
+
+    const groups = [
+        { label: 'All Sessions', initial: '★', ss: sessions },
+        ...Object.values(byKey).sort((a,b) => a.label.localeCompare(b.label))
+    ];
+
+    function stats(ss, fn) {
+        const vals = ss.map(fn).filter(v => v != null && isFinite(v) && v > 0);
+        if (!vals.length) return null;
+        const avg = vals.reduce((a,b) => a+b) / vals.length;
+        const sd  = vals.length > 1
+            ? Math.sqrt(vals.reduce((s,v) => s + (v-avg)**2, 0) / vals.length)
+            : 0;
+        return { avg, sd, n: vals.length };
+    }
+
+    function cell(st, unit = '', decimals = 1) {
+        if (!st) return `<span style="color:var(--text-tertiary)">—</span>`;
+        const sdStr = st.sd > 0.05 ? `<span class="summary-sd">±${st.sd.toFixed(decimals)}</span>` : '';
+        return `<span class="summary-val">${st.avg.toFixed(decimals)}${unit}</span>${sdStr}`;
+    }
+
+    function totalDur(ss) { return ss.reduce((s,x) => s + (x.duration || 0), 0); }
+    function avgDur(ss)   { return ss.length ? Math.round(totalDur(ss) / ss.length) : 0; }
+
+    content.innerHTML = `
+    <div style="overflow-x:auto;">
+    <table class="analyze-summary-table">
+        <thead>
+            <tr>
+                <th>Subject / Group</th>
+                <th>Sessions</th>
+                <th>Avg SRI</th>
+                <th>Avg RMSSD</th>
+                <th>Avg HR</th>
+                <th>Avg Duration</th>
+                <th>Total Recorded</th>
+            </tr>
+        </thead>
+        <tbody>
+        ${groups.map((g, gi) => {
+            const sriSt  = stats(g.ss, s => s.sri > 0 ? s.sri : null);
+            const rmssdSt = stats(g.ss, s => s.stats?.rmssd > 0 ? s.stats.rmssd : null);
+            const hrSt   = stats(g.ss, s => s.stats?.avgRR > 0 ? 60000 / s.stats.avgRR : null);
+            const sriClass = sriSt
+                ? (sriSt.avg >= 75 ? 'sri-excellent' : sriSt.avg >= 55 ? 'sri-good'
+                   : sriSt.avg >= 35 ? 'sri-fair' : 'sri-poor')
+                : '';
+            return `
+            <tr class="${gi === 0 ? 'summary-all-row' : ''}">
+                <td style="white-space:nowrap;">
+                    <span class="summary-avatar">${g.initial}</span>${g.label}
+                </td>
+                <td><span class="summary-val">${g.ss.length}</span></td>
+                <td class="${sriClass}">${cell(sriSt,'',0)}</td>
+                <td>${cell(rmssdSt,' ms')}</td>
+                <td>${cell(hrSt,' bpm',0)}</td>
+                <td><span class="summary-val">${formatDuration(avgDur(g.ss))}</span></td>
+                <td><span class="summary-val">${formatDuration(totalDur(g.ss))}</span></td>
+            </tr>`;
+        }).join('')}
+        </tbody>
+    </table>
+    </div>`;
+}
+
+// ── Protocol CRUD ─────────────────────────────────────────
+
+async function saveProtocol(data, id = null) {
+    return new Promise((resolve, reject) => {
+        const tx    = db.transaction(['protocols'], 'readwrite');
+        const store = tx.objectStore('protocols');
+        const obj   = { name: data.name, phases: data.phases, createdAt: data.createdAt || new Date().toISOString() };
+        if (id) {
+            obj.id = id;
+            const req = store.put(obj);
+            req.onsuccess = () => resolve(id);
+            req.onerror   = () => reject(req.error);
+        } else {
+            const req = store.add(obj);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror   = () => reject(req.error);
+        }
+    });
+}
+
+async function loadProtocols() {
+    return new Promise((resolve, reject) => {
+        const tx  = db.transaction(['protocols'], 'readonly');
+        const req = tx.objectStore('protocols').getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror   = () => reject(req.error);
+    });
+}
+
+async function loadProtocol(id) {
+    return new Promise((resolve, reject) => {
+        const tx  = db.transaction(['protocols'], 'readonly');
+        const req = tx.objectStore('protocols').get(id);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror   = () => reject(req.error);
+    });
+}
+
+async function deleteProtocol(id) {
+    return new Promise((resolve, reject) => {
+        const tx  = db.transaction(['protocols'], 'readwrite');
+        const req = tx.objectStore('protocols').delete(id);
+        req.onsuccess = () => resolve();
+        req.onerror   = () => reject(req.error);
+    });
+}
+
+// ── Protocol helpers ──────────────────────────────────────
+
+function formatPhaseTime(secs) {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function getProtocolTotalSecs(protocol) {
+    return (protocol?.phases || []).reduce((sum, p) => sum + p.durationSecs, 0);
+}
+
+function formatProtocolPhaseList(protocol) {
+    return protocol.phases.map(p => `${p.name} ${formatPhaseTime(p.durationSecs)}`).join(' → ');
+}
+
+function updateProtocolChipDisplay() {
+    const nameEl = document.getElementById('currentProtocolName');
+    const durEl  = document.getElementById('currentProtocolDuration');
+    if (!nameEl) return;
+    if (activeProtocol) {
+        nameEl.textContent = activeProtocol.name;
+        if (durEl) durEl.textContent = `· ${formatPhaseTime(getProtocolTotalSecs(activeProtocol))}`;
+    } else {
+        nameEl.textContent = 'Free Recording';
+        if (durEl) durEl.textContent = '';
+    }
+}
+
+// ── Protocol picker ───────────────────────────────────────
+
+function openProtocolPicker() {
+    renderProtocolPickerList();
+    document.getElementById('protocolPickerPanel').classList.add('active');
+    document.getElementById('protocolPickerOverlay').classList.add('active');
+}
+
+function closeProtocolPicker() {
+    document.getElementById('protocolPickerPanel').classList.remove('active');
+    document.getElementById('protocolPickerOverlay').classList.remove('active');
+}
+
+async function renderProtocolPickerList() {
+    const builtinEl = document.getElementById('builtinProtocolList');
+    const userEl    = document.getElementById('userProtocolList');
+    if (!builtinEl || !userEl) return;
+
+    builtinEl.innerHTML = BUILTIN_PROTOCOLS.map((p, i) => {
+        const isSel = activeProtocol?.id === p.id;
+        return `
+        <div class="protocol-option ${isSel ? 'selected' : ''}">
+            <div class="protocol-option-header">
+                <div class="protocol-option-name">
+                    ${p.name}
+                    <span class="protocol-builtin-badge">Built-in</span>
+                </div>
+            </div>
+            <div class="protocol-option-phases">${formatProtocolPhaseList(p)}</div>
+            <div class="protocol-option-meta">${p.phases.length} phases · ${formatPhaseTime(getProtocolTotalSecs(p))}</div>
+            <div class="protocol-option-actions">
+                <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px;min-height:28px;"
+                        onclick="selectBuiltinProtocol(${i})">
+                    ${isSel ? '✓ Selected' : 'Select'}
+                </button>
+            </div>
+        </div>`;
+    }).join('');
+
+    const userProtocols = await loadProtocols();
+    if (userProtocols.length === 0) {
+        userEl.innerHTML = `<p style="color:var(--text-tertiary);font-size:13px;padding:12px 0;">No custom protocols yet.</p>`;
+        return;
+    }
+    userEl.innerHTML = userProtocols.map(p => {
+        const isSel = activeProtocol?.id === p.id;
+        return `
+        <div class="protocol-option ${isSel ? 'selected' : ''}">
+            <div class="protocol-option-header">
+                <div class="protocol-option-name">${p.name}</div>
+            </div>
+            <div class="protocol-option-phases">${formatProtocolPhaseList(p)}</div>
+            <div class="protocol-option-meta">${p.phases.length} phases · ${formatPhaseTime(getProtocolTotalSecs(p))}</div>
+            <div class="protocol-option-actions">
+                <button class="session-action-btn" onclick="openProtocolEditor(${p.id})" title="Edit">✏️</button>
+                <button class="session-action-btn delete" onclick="confirmDeleteProtocol(${p.id})" title="Delete">🗑️</button>
+                <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px;min-height:28px;"
+                        onclick="selectUserProtocol(${p.id})">
+                    ${isSel ? '✓ Selected' : 'Select'}
+                </button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function selectBuiltinProtocol(idx) {
+    activeProtocol = { ...BUILTIN_PROTOCOLS[idx] };
+    updateProtocolChipDisplay();
+    closeProtocolPicker();
+}
+
+async function selectUserProtocol(id) {
+    const p = await loadProtocol(id);
+    if (!p) return;
+    activeProtocol = p;
+    updateProtocolChipDisplay();
+    closeProtocolPicker();
+}
+
+function selectFreeRecording() {
+    activeProtocol = null;
+    updateProtocolChipDisplay();
+    closeProtocolPicker();
+}
+
+async function confirmDeleteProtocol(id) {
+    const p = await loadProtocol(id);
+    if (!confirm(`Delete protocol "${p.name}"?`)) return;
+    if (activeProtocol?.id === id) {
+        activeProtocol = null;
+        updateProtocolChipDisplay();
+    }
+    await deleteProtocol(id);
+    renderProtocolPickerList();
+}
+
+// ── Protocol editor ───────────────────────────────────────
+
+async function openProtocolEditor(id = null) {
+    closeProtocolPicker();
+    if (id) {
+        const p = await loadProtocol(id);
+        if (!p) return;
+        protocolEditorState = { id: p.id, name: p.name, phases: p.phases.map(ph => ({ ...ph })) };
+        document.getElementById('protocolEditorTitle').textContent = 'Edit Protocol';
+        document.getElementById('protocolEditorName').value = p.name;
+    } else {
+        protocolEditorState = { id: null, name: '', phases: [{ name: 'Phase 1', durationSecs: 300, autoMark: true }] };
+        document.getElementById('protocolEditorTitle').textContent = 'Create Protocol';
+        document.getElementById('protocolEditorName').value = '';
+    }
+    renderProtocolPhaseEditor();
+    document.getElementById('protocolEditorPanel').classList.add('active');
+    document.getElementById('protocolEditorOverlay').classList.add('active');
+}
+
+function closeProtocolEditor() {
+    document.getElementById('protocolEditorPanel').classList.remove('active');
+    document.getElementById('protocolEditorOverlay').classList.remove('active');
+}
+
+function renderProtocolPhaseEditor() {
+    const list = document.getElementById('protocolPhasesList');
+    if (!list) return;
+
+    if (protocolEditorState.phases.length === 0) {
+        list.innerHTML = `<div style="color:var(--text-tertiary);text-align:center;padding:16px;font-size:13px;">No phases. Click + Add Phase.</div>`;
+        return;
+    }
+
+    list.innerHTML = protocolEditorState.phases.map((phase, i) => {
+        const mins = Math.floor(phase.durationSecs / 60);
+        const secs = phase.durationSecs % 60;
+        return `
+        <div class="protocol-phase-row" data-idx="${i}">
+            <div class="phase-row-num">${i + 1}</div>
+            <input type="text"   class="phase-name-input" value="${phase.name}" placeholder="Phase name" data-idx="${i}">
+            <input type="number" class="phase-min-input"  value="${mins}" min="0" max="120" data-idx="${i}">
+            <span class="phase-sep">m</span>
+            <input type="number" class="phase-sec-input"  value="${secs}" min="0" max="59"  data-idx="${i}">
+            <span class="phase-sep">s</span>
+            <button class="annotation-delete phase-remove-btn" data-idx="${i}">✕</button>
+        </div>`;
+    }).join('');
+
+    list.querySelectorAll('.phase-name-input').forEach(input => {
+        input.addEventListener('input', e => {
+            protocolEditorState.phases[parseInt(e.target.dataset.idx)].name = e.target.value;
+        });
+    });
+
+    list.querySelectorAll('.phase-min-input, .phase-sec-input').forEach(input => {
+        input.addEventListener('input', e => {
+            const idx = parseInt(e.target.dataset.idx);
+            const row = list.querySelector(`.protocol-phase-row[data-idx="${idx}"]`);
+            const m   = parseInt(row.querySelector('.phase-min-input').value) || 0;
+            const s   = parseInt(row.querySelector('.phase-sec-input').value) || 0;
+            protocolEditorState.phases[idx].durationSecs = m * 60 + s;
+        });
+    });
+
+    list.querySelectorAll('.phase-remove-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            protocolEditorState.phases.splice(parseInt(btn.dataset.idx), 1);
+            renderProtocolPhaseEditor();
+        });
+    });
+}
+
+function addEditorPhase() {
+    protocolEditorState.phases.push({ name: `Phase ${protocolEditorState.phases.length + 1}`, durationSecs: 300, autoMark: true });
+    renderProtocolPhaseEditor();
+    // Scroll list to bottom so new phase is visible
+    const list = document.getElementById('protocolPhasesList');
+    if (list) list.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function saveProtocolFromEditor() {
+    const name = document.getElementById('protocolEditorName').value.trim();
+    if (!name) { alert('Please enter a protocol name.'); return; }
+    if (protocolEditorState.phases.length === 0) { alert('Add at least one phase.'); return; }
+
+    const id = await saveProtocol({ name, phases: protocolEditorState.phases }, protocolEditorState.id || null);
+
+    // If this was the active protocol, refresh it
+    if (activeProtocol && (activeProtocol.id === protocolEditorState.id || activeProtocol.id === id)) {
+        activeProtocol = { id, name, phases: protocolEditorState.phases };
+        updateProtocolChipDisplay();
+    }
+
+    closeProtocolEditor();
+    openProtocolPicker();
+}
+
+// ── Protocol runner ───────────────────────────────────────
+
+function addEventMarkerProgrammatic(type, annotation = '') {
+    if (!calibrationStartTime) return;
+    const t = (Date.now() - calibrationStartTime) / 1000;
+    const marker = { time: t, type, annotation, label: type };
+    eventMarkers.push(marker);
+    sessionAnnotations.push(marker);
+    updateRRChartWithMarkers();
+    updateRollingRMSSD();
+    renderAnnotations();
+}
+
+function startProtocolRunner() {
+    if (!activeProtocol?.phases?.length) return;
+    currentPhaseIdx  = 0;
+    phaseSecondsLeft = activeProtocol.phases[0].durationSecs;
+    protocolRunning  = true;
+
+    const panel = document.getElementById('protocolRunnerPanel');
+    panel.style.display = '';
+    // Restore full runner HTML in case complete banner replaced it
+    if (!panel.querySelector('.protocol-runner-header')) {
+        panel.innerHTML = `
+        <div class="protocol-runner-header">
+            <div class="protocol-runner-title">
+                <span class="protocol-runner-icon">🔬</span>
+                <span id="protocolRunnerName"></span>
+            </div>
+            <div class="protocol-runner-btns">
+                <button class="btn btn-secondary protocol-runner-btn" id="protocolSkipBtn">Skip →</button>
+                <button class="btn btn-danger protocol-runner-btn" id="protocolStopBtn">■ Stop</button>
+            </div>
+        </div>
+        <div class="protocol-runner-body">
+            <div class="protocol-runner-phase-row">
+                <span class="protocol-phase-label">Phase <span id="protocolPhaseNum">1</span>/<span id="protocolPhaseTotal">1</span>:</span>
+                <span class="protocol-phase-name" id="protocolPhaseName"></span>
+                <span class="protocol-phase-time" id="protocolPhaseTime">00:00</span>
+            </div>
+            <div class="protocol-progress-track"><div class="protocol-progress-fill" id="protocolProgressFill"></div></div>
+            <div class="protocol-next-phase" id="protocolNextPhase"></div>
+        </div>`;
+        // Re-bind buttons (they're new DOM elements)
+        document.getElementById('protocolSkipBtn').addEventListener('click', skipProtocolPhase);
+        document.getElementById('protocolStopBtn').addEventListener('click', stopProtocolRunner);
+    }
+
+    document.getElementById('protocolRunnerName').textContent = activeProtocol.name;
+    document.getElementById('protocolPhaseTotal').textContent = activeProtocol.phases.length;
+
+    addEventMarkerProgrammatic(`Start: ${activeProtocol.phases[0].name}`);
+    updateProtocolRunnerUI();
+
+    if (phaseTimer) clearInterval(phaseTimer);
+    phaseTimer = setInterval(() => {
+        phaseSecondsLeft--;
+        if (phaseSecondsLeft <= 0) {
+            advanceProtocolPhase();
+        } else {
+            updateProtocolRunnerUI();
+        }
+    }, 1000);
+}
+
+function stopProtocolRunner() {
+    if (phaseTimer) { clearInterval(phaseTimer); phaseTimer = null; }
+    protocolRunning  = false;
+    currentPhaseIdx  = 0;
+    phaseSecondsLeft = 0;
+    document.getElementById('protocolRunnerPanel').style.display = 'none';
+}
+
+function skipProtocolPhase() {
+    if (!protocolRunning) return;
+    phaseSecondsLeft = 0;
+    advanceProtocolPhase();
+}
+
+function advanceProtocolPhase() {
+    const phases = activeProtocol.phases;
+    addEventMarkerProgrammatic(`End: ${phases[currentPhaseIdx].name}`);
+    currentPhaseIdx++;
+
+    if (currentPhaseIdx >= phases.length) {
+        addEventMarkerProgrammatic('Protocol Complete');
+        stopProtocolRunner();
+        // Show completion banner briefly
+        const panel = document.getElementById('protocolRunnerPanel');
+        panel.style.display = '';
+        panel.innerHTML = `
+            <div class="protocol-runner-complete">
+                <span class="protocol-complete-icon">✅</span>
+                <span class="protocol-complete-text">Protocol complete — recording continues</span>
+                <button class="btn btn-secondary protocol-runner-btn"
+                        onclick="document.getElementById('protocolRunnerPanel').style.display='none'">Dismiss</button>
+            </div>`;
+        setTimeout(() => { if (panel) panel.style.display = 'none'; }, 6000);
+        return;
+    }
+
+    phaseSecondsLeft = phases[currentPhaseIdx].durationSecs;
+    addEventMarkerProgrammatic(`Start: ${phases[currentPhaseIdx].name}`);
+    updateProtocolRunnerUI();
+}
+
+function updateProtocolRunnerUI() {
+    if (!protocolRunning || !activeProtocol) return;
+    const phase   = activeProtocol.phases[currentPhaseIdx];
+    const total   = phase.durationSecs;
+    const elapsed = total - phaseSecondsLeft;
+
+    const numEl  = document.getElementById('protocolPhaseNum');
+    const nmEl   = document.getElementById('protocolPhaseName');
+    const tmEl   = document.getElementById('protocolPhaseTime');
+    const fillEl = document.getElementById('protocolProgressFill');
+    const nextEl = document.getElementById('protocolNextPhase');
+    if (!numEl) return;
+
+    numEl.textContent  = currentPhaseIdx + 1;
+    nmEl.textContent   = phase.name;
+    tmEl.textContent   = formatPhaseTime(phaseSecondsLeft);
+    fillEl.style.width = `${(elapsed / total) * 100}%`;
+
+    const nextPhase = activeProtocol.phases[currentPhaseIdx + 1];
+    nextEl.textContent = nextPhase
+        ? `Next: ${nextPhase.name} (${formatPhaseTime(nextPhase.durationSecs)})`
+        : 'Last phase';
 }
 
 // Update chart themes
@@ -350,7 +2098,7 @@ function updateChartThemes() {
 
 // Calculate HR zones
 function getHRZone(hr, age) {
-    age = age || appSettings.age || 30;
+    age = age || getEffectiveAge();
     const maxHR = 220 - age;
     const percentage = (hr / maxHR) * 100;
 
@@ -364,7 +2112,7 @@ function getHRZone(hr, age) {
 // Update HR zone display
 function updateHRZone(hr) {
     if (hr > 0) {
-        const zoneInfo = getHRZone(hr);
+        const zoneInfo = getHRZone(hr, getEffectiveAge());
         hrZoneIndicator.style.display = 'flex';
         hrZoneIndicator.className = `hr-zone-indicator ${zoneInfo.class}`;
         hrZoneText.textContent = zoneInfo.name;
@@ -924,7 +2672,11 @@ async function saveSession(sessionData, sessionId = null) {
             },
             sri: sessionData.sri || sriScore,
             sriComponents: sessionData.sriComponents || sriComponents,
-            peakHR: sessionData.peakHR || peakHR
+            peakHR: sessionData.peakHR || peakHR,
+            subjectId:    sessionData.subjectId    !== undefined ? sessionData.subjectId    : currentSubjectId,
+            subjectName:  sessionData.subjectName  !== undefined ? sessionData.subjectName  : currentSubjectName,
+            protocolId:   sessionData.protocolId   !== undefined ? sessionData.protocolId   : (activeProtocol?.id   ?? null),
+            protocolName: sessionData.protocolName !== undefined ? sessionData.protocolName : (activeProtocol?.name ?? null)
         };
 
         if (sessionId) {
@@ -1054,7 +2806,11 @@ async function autoSaveSession() {
             rmssd,
             sri: sriScore,
             sriComponents: { ...sriComponents },
-            peakHR: peakHR
+            peakHR: peakHR,
+            subjectId:    currentSubjectId,
+            subjectName:  currentSubjectName,
+            protocolId:   activeProtocol?.id   ?? null,
+            protocolName: activeProtocol?.name ?? null
         }, currentSessionId);
 
         if (!currentSessionId) {
@@ -1105,7 +2861,15 @@ async function updateHistoryBadge() {
                 `<option value="${tag}">${tag}</option>`
             ).join('');
         tagFilter.innerHTML = tagOptions;
-        historyTableTagFilter.innerHTML = tagOptions;
+
+        const subjectFilterEl = document.getElementById('subjectFilter');
+        if (subjectFilterEl) {
+            const subjects = await loadSubjects();
+            subjectFilterEl.innerHTML = '<option value="">All Subjects</option>' +
+                '<option value="anonymous">Anonymous</option>' +
+                subjects.sort((a,b) => a.name.localeCompare(b.name))
+                    .map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+        }
     } catch (error) {
         console.error('Failed to update history badge:', error);
     }
@@ -1113,16 +2877,22 @@ async function updateHistoryBadge() {
 
 // Filter and sort sessions
 function filterAndSortSessions(sessions, overrides = {}) {
-    const searchTerm = (overrides.search ?? historySearch.value).toLowerCase();
-    const selectedTag = overrides.tag ?? tagFilter.value;
-    const sortBy = overrides.sort ?? sortFilter.value;
+    const searchTerm     = (overrides.search  ?? historySearch.value).toLowerCase();
+    const selectedTag    = overrides.tag     ?? tagFilter.value;
+    const selectedSubject = overrides.subject ?? (document.getElementById('subjectFilter')?.value ?? '');
+    const sortBy         = overrides.sort    ?? sortFilter.value;
 
     let filtered = sessions.filter(session => {
         const matchesSearch = !searchTerm ||
             session.filename.toLowerCase().includes(searchTerm) ||
+            (session.subjectName || '').toLowerCase().includes(searchTerm) ||
             formatDate(session.date).toLowerCase().includes(searchTerm);
         const matchesTag = !selectedTag || (session.tags && session.tags.includes(selectedTag));
-        return matchesSearch && matchesTag;
+        const matchesSubject = !selectedSubject ||
+            (selectedSubject === 'anonymous'
+                ? !session.subjectId
+                : String(session.subjectId) === selectedSubject);
+        return matchesSearch && matchesTag && matchesSubject;
     });
 
     filtered.sort((a, b) => {
@@ -1161,6 +2931,7 @@ async function renderHistory() {
                         <div class="session-date">${formatDate(session.date)}</div>
                         <div class="session-time">Duration: ${formatDuration(session.duration)}</div>
                         <div class="session-filename">${session.filename || 'polar-h10-data'}</div>
+                        ${session.subjectName && session.subjectName !== 'Anonymous' ? `<div class="session-subject-chip">👤 ${session.subjectName}</div>` : ''}
                         ${session.tags && session.tags.length > 0 ? `
                             <div class="session-tags">
                                 ${session.tags.map(tag => `<span class="session-tag">${tag}</span>`).join('')}
@@ -1240,15 +3011,11 @@ async function renderHistory() {
 async function renderHistoryTable() {
     try {
         const sessions = await loadSessions();
-        const filtered = filterAndSortSessions(sessions, {
-            search: historyTableSearch.value,
-            tag:    historyTableTagFilter.value,
-            sort:   historyTableSortFilter.value,
-        });
+        const filtered = filterAndSortSessions(sessions);
 
         if (filtered.length === 0) {
             historyTableBody.innerHTML = `
-                <tr><td colspan="11" style="text-align:center; padding:32px; color:var(--text-tertiary);">
+                <tr><td colspan="12" style="text-align:center; padding:32px; color:var(--text-tertiary);">
                     No sessions found
                 </td></tr>`;
             return;
@@ -1268,6 +3035,7 @@ async function renderHistoryTable() {
                 <td><input type="checkbox" class="row-select" data-id="${session.id}"></td>
                 <td class="table-date">${formatDate(session.date)}</td>
                 <td class="table-name">${session.filename || 'polar-h10-data'}</td>
+                <td>${session.subjectName && session.subjectName !== 'Anonymous' ? `<span class="session-subject-chip">👤 ${session.subjectName}</span>` : '<span style="color:var(--text-tertiary)">—</span>'}</td>
                 <td>${formatDuration(session.duration)}</td>
                 <td>${session.stats.samples}</td>
                 <td>${session.stats.avgRR ? session.stats.avgRR.toFixed(1) + ' ms' : '—'}</td>
@@ -1393,10 +3161,7 @@ async function restoreSession(id) {
         renderTags();
 
         // Dismiss whichever history UI is currently open
-        historyPanel.classList.remove('active');
-        historyOverlay.classList.remove('active');
-        historyTableModal.classList.remove('active');
-        historyTableOverlay.classList.remove('active');
+        switchTab('record');
         await updateHistoryBadge();
 
         console.log(`✓ Session restored: ${session.stats.samples} samples, SRI: ${sriScore}`);
@@ -1516,14 +3281,11 @@ async function bulkDownloadSessions(filterOverrides = {}) {
 
 // History panel controls
 function openHistory() {
-    historyPanel.classList.add('active');
-    historyOverlay.classList.add('active');
-    renderHistory();
+    switchTab('history');
 }
 
 function closeHistory() {
-    historyPanel.classList.remove('active');
-    historyOverlay.classList.remove('active');
+    switchTab('record');
 }
 
 // Event type panel controls
@@ -1777,84 +3539,107 @@ reportBtn.addEventListener('click', generatePDFReport);
 timestampBtn.addEventListener('click', openEventTypePanel);
 cinemaToggle.addEventListener('click', toggleCinemaMode);
 themeToggle.addEventListener('click', toggleTheme);
-historyBtn.addEventListener('click', openHistory);
-historyClose.addEventListener('click', closeHistory);
-historyOverlay.addEventListener('click', closeHistory);
+
 eventTypeClose.addEventListener('click', closeEventTypePanel);
 eventTypeOverlay.addEventListener('click', closeEventTypePanel);
 addEventBtn.addEventListener('click', addEventMarker);
 addTagBtn.addEventListener('click', addTag);
 clearAllBtn.addEventListener('click', clearAllSessions);
 bulkDownloadBtn.addEventListener('click', bulkDownloadSessions);
+
+// Protocol management
+document.getElementById('changeProtocolBtn').addEventListener('click', openProtocolPicker);
+document.getElementById('protocolPickerClose').addEventListener('click', closeProtocolPicker);
+document.getElementById('protocolPickerOverlay').addEventListener('click', closeProtocolPicker);
+document.getElementById('freeRecordingBtn').addEventListener('click', selectFreeRecording);
+document.getElementById('createProtocolBtn').addEventListener('click', () => openProtocolEditor(null));
+document.getElementById('protocolEditorClose').addEventListener('click', closeProtocolEditor);
+document.getElementById('protocolEditorOverlay').addEventListener('click', closeProtocolEditor);
+document.getElementById('addPhaseBtn').addEventListener('click', addEditorPhase);
+document.getElementById('saveProtocolBtn').addEventListener('click', saveProtocolFromEditor);
+document.getElementById('cancelProtocolEditorBtn').addEventListener('click', closeProtocolEditor);
+document.getElementById('protocolSkipBtn').addEventListener('click', skipProtocolPhase);
+document.getElementById('protocolStopBtn').addEventListener('click', stopProtocolRunner);
+
+// Recording modes
+document.getElementById('focusModeBtn').addEventListener('click', toggleFocusMode);
+document.getElementById('biofeedbackModeBtn').addEventListener('click', toggleBiofeedbackMode);
+document.getElementById('monitorWindowBtn').addEventListener('click', openMonitorWindow);
+document.getElementById('biofeedbackExitBtn').addEventListener('click', exitBiofeedbackMode);
+
+// Analyze tab
+document.querySelectorAll('.analyze-subtab').forEach(btn => {
+    btn.addEventListener('click', () => switchAnalyzeSubtab(btn.dataset.subtab));
+});
+document.getElementById('analyzeSubjectFilter')?.addEventListener('change', () => {
+    if (analyzeCurrentSubtab === 'trends')  renderTrendsView();
+    if (analyzeCurrentSubtab === 'summary') renderSummaryView();
+});
+document.getElementById('analyzeRefreshBtn')?.addEventListener('click', renderAnalyzeTab);
+document.getElementById('comparisonMetric')?.addEventListener('change', renderComparisonChart);
+
+// Export tab
+document.getElementById('exportSubjectFilter')?.addEventListener('change', renderExportTab);
+document.getElementById('exportTagFilter')?.addEventListener('change', renderExportTab);
+document.getElementById('exportSortFilter')?.addEventListener('change', renderExportTab);
+document.getElementById('exportSelectAllBtn')?.addEventListener('click', selectAllExportSessions);
+document.getElementById('exportDeselectAllBtn')?.addEventListener('click', deselectAllExportSessions);
+document.getElementById('exportSummaryBtn')?.addEventListener('click', exportSelectedSummaryCSV);
+document.getElementById('exportZipBtn')?.addEventListener('click', exportSelectedZip);
+document.getElementById('exportJsonBtn')?.addEventListener('click', exportSelectedJSON);
+
+// Subject management
+document.getElementById('changeSubjectBtn').addEventListener('click', openSubjectPicker);
+document.getElementById('subjectPickerClose').addEventListener('click', closeSubjectPicker);
+document.getElementById('subjectPickerOverlay').addEventListener('click', closeSubjectPicker);
+document.getElementById('addAndSelectSubjectBtn').addEventListener('click', addAndSelectSubject);
+document.getElementById('addSubjectBtn').addEventListener('click', openAddSubjectForm);
+document.getElementById('subjectEditClose').addEventListener('click', closeSubjectEdit);
+document.getElementById('subjectEditOverlay').addEventListener('click', closeSubjectEdit);
+document.getElementById('saveSubjectEditBtn').addEventListener('click', saveSubjectEdit);
+document.getElementById('cancelSubjectEditBtn').addEventListener('click', closeSubjectEdit);
+document.getElementById('subjectFilter')?.addEventListener('change', renderHistory);
+document.getElementById('newSubjectAge').addEventListener('keypress', e => { if (e.key === 'Enter') addAndSelectSubject(); });
+document.getElementById('newSubjectName').addEventListener('keypress', e => { if (e.key === 'Enter') document.getElementById('newSubjectAge').focus(); });
+
+// Tab bar navigation
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        if (btn.classList.contains('tab-btn--soon')) return;
+        switchTab(btn.dataset.tab);
+    });
+});
+
 historySearch.addEventListener('input', renderHistory);
 tagFilter.addEventListener('change', renderHistory);
 sortFilter.addEventListener('change', renderHistory);
-historyTableSearch.addEventListener('input', renderHistoryTable);
-historyTableTagFilter.addEventListener('change', renderHistoryTable);
-historyTableSortFilter.addEventListener('change', renderHistoryTable);
 
 // View toggle tabs
 tabCards.addEventListener('click', () => {
-    currentHistoryView = 'cards';
-    tabCards.classList.add('active');
-    tabTable.classList.remove('active');
-    historyContent.style.display = '';
+    closeHistoryTable();
 });
 
 tabTable.addEventListener('click', () => {
-    currentHistoryView = 'table';
-    tabCards.classList.remove('active');
-    tabTable.classList.add('active');
-    historyContent.style.display = 'none';
-    historyPanel.classList.remove('active');
-    historyOverlay.classList.remove('active');
     openHistoryTable();
 });
 
 function openHistoryTable() {
-    // Sync filter values from the sidebar into the table modal
-    historyTableSearch.value = historySearch.value;
-    historyTableTagFilter.value  = tagFilter.value;
-    historyTableSortFilter.value = sortFilter.value;
-    historyTableModal.classList.add('active');
-    historyTableOverlay.classList.add('active');
+    currentHistoryView = 'table';
+    tabCards.classList.remove('active');
+    tabTable.classList.add('active');
+    document.getElementById('historyCardsView').style.display = 'none';
+    document.getElementById('historyTableView').style.display = '';
     renderHistoryTable();
 }
 
 function closeHistoryTable() {
-    historyTableModal.classList.remove('active');
-    historyTableOverlay.classList.remove('active');
     currentHistoryView = 'cards';
     tabCards.classList.add('active');
     tabTable.classList.remove('active');
-    historyContent.style.display = '';
-    historyPanel.classList.add('active');    // reopen sidebar
-    historyOverlay.classList.add('active');
-    renderHistory();                         // refresh card view
+    document.getElementById('historyCardsView').style.display = '';
+    document.getElementById('historyTableView').style.display = 'none';
+    renderHistory();
 }
-
-historyTableClose.addEventListener('click', closeHistoryTable);
-historyTableOverlay.addEventListener('click', closeHistoryTable);
-
-// Wire the in-modal bulk download to use its own format select
-historyTableBulkDownloadBtn.addEventListener('click', async () => {
-    const savedFormat = bulkFormatSelect.value;
-    bulkFormatSelect.value = historyTableFormatSelect.value;
-
-    historyTableBulkDownloadBtn.disabled = true;
-    historyTableBulkDownloadBtn.textContent = '⏳ Preparing...';
-    try {
-        await bulkDownloadSessions({
-            search: historyTableSearch.value,
-            tag:    historyTableTagFilter.value,
-            sort:   historyTableSortFilter.value,
-        });
-    } finally {
-        historyTableBulkDownloadBtn.disabled = false;
-        historyTableBulkDownloadBtn.textContent = '⬇ Download';
-        bulkFormatSelect.value = savedFormat;
-    }
-});
 
 tagInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') addTag();
@@ -1982,6 +3767,10 @@ async function performSessionReset(showConfirm = true) {
     }
 
     stopAutoSave();
+    stopProtocolRunner();
+    exitFocusMode();
+    exitBiofeedbackMode();
+    updateModesAvailability();
 
     // Clear all data arrays
     rrIntervals = [];
@@ -2140,6 +3929,9 @@ async function connect() {
                 status.classList.remove('calibrating');
                 console.log('✓ Calibration complete - recording started');
                 status.classList.add('connected');
+                if (activeProtocol) startProtocolRunner();
+                updateModesAvailability();
+                broadcastMonitorUpdate();
             }
         }, (appSettings.calibrationSecs || 8) * 1000);
 
@@ -2163,6 +3955,11 @@ async function connect() {
 function disconnect(skipConfirm = false) {
     if (skipConfirm || confirm('Disconnect device? Data will be saved to history.')) {
         stopAutoSave();
+        stopProtocolRunner();
+        exitFocusMode();
+        exitBiofeedbackMode();
+        if (monitorChannel) { broadcastMonitorUpdate(); }
+        updateModesAvailability();
         if (device && device.gatt.connected) {
             if (rrIntervals.length > 0) {
                 const currentTime = calibrationStartTime
@@ -2196,7 +3993,11 @@ function disconnect(skipConfirm = false) {
                     rmssd,
                     sri: sriScore,
                     sriComponents: { ...sriComponents },
-                    peakHR: peakHR
+                    peakHR: peakHR,
+                    subjectId:    currentSubjectId,
+                    subjectName:  currentSubjectName,
+                    protocolId:   activeProtocol?.id   ?? null,
+                    protocolName: activeProtocol?.name ?? null
                 }, currentSessionId).then(() => {
                     console.log('✓ Session saved to history');
                     updateHistoryBadge();
@@ -2913,6 +4714,8 @@ function updateStats() {
     }
 
     updateSRI();
+    updateBiofeedbackDisplay();
+    broadcastMonitorUpdate();
 }
 
 // Update ECG chart
@@ -3123,7 +4926,7 @@ function updateHRChart() {
     const el = document.getElementById('hrChart');
     if (!el) return;
 
-    const age = appSettings.age || 30;
+    const age = getEffectiveAge();
     const maxHR = 220 - age;
     const zonePcts  = [0, 0.60, 0.70, 0.80, 0.90, 1.10];
     const zoneBPMs  = zonePcts.map(p => p * maxHR);
@@ -3667,7 +5470,7 @@ ${sriResult ? (() => {
 ${(imgHR || imgVagal) ? `<div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Heart Rate & Vagal Proxy</span></div>
   ${imgHR ? `<div class="chart-card" style="margin-bottom:14px;">
-    <div class="chart-card-label">Heart Rate over Time with Training Zones (Age ${appSettings.age}, Max HR ${220-appSettings.age} bpm)</div>
+    <div class="chart-card-label">Heart Rate over Time with Training Zones (Age ${getEffectiveAge()}, Max HR ${220-getEffectiveAge()} bpm)</div>
     <img src="${imgHR}" alt="Heart Rate chart">
   </div>` : ''}
   ${imgVagal ? `<div class="chart-card">
@@ -4007,6 +5810,10 @@ async function copyToClipboard() {
             updateSRI();
             initGaugeResponsiveness();
         }
+
+        updateSubjectChipDisplay();
+        updateProtocolChipDisplay();
+        updateModesAvailability();
 
         console.log('✓ App initialized');
     } catch (error) {

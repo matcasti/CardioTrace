@@ -24,143 +24,765 @@
             </div>
         </div>
 
-        <!-- History Button -->
-        <button class="history-button" id="historyBtn">
-            <span class="history-icon">📚</span>
-            <span class="history-badge" id="historyBadge">0</span>
-        </button>
+        <nav class="tab-bar" id="tabBar">
+            <button class="tab-btn is-active" data-tab="record">
+                <span class="tab-icon">⏺</span>
+                <span class="tab-label">Record</span>
+            </button>
+            <button class="tab-btn" data-tab="history">
+                <span class="tab-icon">📋</span>
+                <span class="tab-label">History</span>
+                <span class="tab-badge" id="historyBadge">0</span>
+            </button>
+            <button class="tab-btn" data-tab="analyze">
+                <span class="tab-icon">📈</span>
+                <span class="tab-label">Analyze</span>
+            </button>
+            <button class="tab-btn" data-tab="subjects">
+                <span class="tab-icon">👤</span>
+                <span class="tab-label">Subjects</span>
+            </button>
+            <button class="tab-btn" data-tab="export">
+                <span class="tab-icon">💾</span>
+                <span class="tab-label">Export</span>
+            </button>
+        </nav>
 
-        <!-- History Panel -->
-        <div class="modal-panel" id="historyPanel">
-            <div class="modal-header">
-                <h2>Session History</h2>
-                <button class="modal-close" id="historyClose">✕</button>
-            </div>
-            <div class="history-view-tabs">
-                <button class="history-tab active" id="tabCards" data-view="cards">◈️ Cards</button>
-                <button class="history-tab" id="tabTable" data-view="table">⊞ Table</button>
-            </div>
-            <div class="search-filter-section">
-                <div class="search-box">
-                    <input type="search" id="historySearch" placeholder="🔍 Search sessions...">
+        <div id="tab-record" class="tab-panel is-active">
+
+            <!-- Event Type Modal -->
+            <div class="modal-panel" id="eventTypePanel">
+                <div class="modal-header">
+                    <h2>Mark Event</h2>
+                    <button class="modal-close" id="eventTypeClose">✕</button>
                 </div>
-                <div class="filter-controls">
-                    <select id="tagFilter">
-                        <option value="">All Tags</option>
-                    </select>
-                    <select id="sortFilter">
-                        <option value="newest">Newest First</option>
-                        <option value="oldest">Oldest First</option>
-                        <option value="longest">Longest Duration</option>
-                        <option value="shortest">Shortest Duration</option>
-                    </select>
-                </div>
-            </div>
-            <div class="modal-content" id="historyContent">
-                <div class="history-empty">
-                    <span class="empty-icon">📊</span>
-                    <p>No saved sessions yet</p>
+                <div class="modal-content">
+                    <div class="section-title">Select Event Type</div>
+                    <div class="event-type-selector" id="eventTypeSelector">
+                        <button class="event-type-btn" data-type="Start">🏁 Start</button>
+                        <button class="event-type-btn" data-type="Exercise">💪 Exercise</button>
+                        <button class="event-type-btn" data-type="Rest">😌 Rest</button>
+                        <button class="event-type-btn" data-type="Peak">⚡ Peak</button>
+                        <button class="event-type-btn" data-type="Recovery">🔄 Recovery</button>
+                        <button class="event-type-btn" data-type="Breathe">🫁 Breathe</button>
+                        <button class="event-type-btn" data-type="Note">📝 Note</button>
+                        <button class="event-type-btn" data-type="Custom">✨ Custom</button>
+                    </div>
+                    <div class="annotation-input">
+                        <input type="text" id="eventAnnotation" placeholder="Add note (optional)...">
+                        <button class="btn btn-primary" id="addEventBtn">Add</button>
+                    </div>
+                    <div class="section-title" style="margin-top: 24px;">Recent Events</div>
+                    <div class="annotations-list" id="annotationsList"></div>
                 </div>
             </div>
-            <div class="modal-actions">
-                <button class="btn btn-accent" id="bulkDownloadBtn" style="flex: 1;">⬇ Download</button>
-                <div class="bulk-format-select" id="bulkFormatWrapper">
-                    <select id="bulkFormatSelect">
-                        <option value="csv">CSV</option>
-                        <option value="txt">TXT (RR only)</option>
-                    </select>
+
+            <!-- Subject Picker Modal -->
+            <div class="modal-panel" id="subjectPickerPanel">
+                <div class="modal-header">
+                    <h2>Select Subject</h2>
+                    <button class="modal-close" id="subjectPickerClose">✕</button>
                 </div>
-                <button class="btn btn-danger" id="clearAllBtn" style="flex: 1;">🗑️ Clear All</button>
+                <div class="modal-content">
+                    <div class="section-title">Current Subjects</div>
+                    <div id="subjectPickerList">
+                        <!-- Rendered dynamically -->
+                    </div>
+                    <div class="section-title" style="margin-top: 24px;">New Subject</div>
+                    <div class="section-content">
+                        <div class="input-group">
+                            <input type="text" id="newSubjectName" placeholder="Name...">
+                        </div>
+                        <div class="input-group" style="margin-top: 8px;">
+                            <input type="number" id="newSubjectAge" placeholder="Age" min="1" max="120">
+                        </div>
+                        <button class="btn btn-primary" id="addAndSelectSubjectBtn" style="width: 100%; margin-top: 10px;">
+                            + Add &amp; Select
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Protocol Picker Modal -->
+            <div class="modal-panel" id="protocolPickerPanel">
+                <div class="modal-header">
+                    <h2>Select Protocol</h2>
+                    <button class="modal-close" id="protocolPickerClose">✕</button>
+                </div>
+                <div class="modal-content">
+                    <div class="section-title">Built-in</div>
+                    <div id="builtinProtocolList"></div>
+                    <div class="section-title" style="margin-top: 20px;">My Protocols</div>
+                    <div id="userProtocolList">
+                        <p style="color:var(--text-tertiary);font-size:13px;padding:12px 0;">No custom protocols yet.</p>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-primary" id="createProtocolBtn" style="flex:1;">+ Create Protocol</button>
+                    <button class="btn btn-secondary" id="freeRecordingBtn" style="flex:1;">✕ Free Recording</button>
+                </div>
+            </div>
+            <div class="modal-overlay" id="protocolPickerOverlay"></div>
+
+            <!-- Protocol Editor Modal -->
+            <div class="modal-panel" id="protocolEditorPanel">
+                <div class="modal-header">
+                    <h2 id="protocolEditorTitle">Create Protocol</h2>
+                    <button class="modal-close" id="protocolEditorClose">✕</button>
+                </div>
+                <div class="modal-content">
+                    <div class="input-group" style="margin-bottom: 16px;">
+                        <input type="text" id="protocolEditorName" placeholder="Protocol name...">
+                    </div>
+                    <div class="section-title">Phases</div>
+                    <div id="protocolPhasesList"></div>
+                    <button class="btn btn-secondary" id="addPhaseBtn" style="width:100%;margin-top:10px;">+ Add Phase</button>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-primary" id="saveProtocolBtn" style="flex:1;">Save Protocol</button>
+                    <button class="btn btn-secondary" id="cancelProtocolEditorBtn" style="flex:1;">Cancel</button>
+                </div>
+            </div>
+            <div class="modal-overlay" id="protocolEditorOverlay"></div>
+
+            <!-- Overlays -->
+            <div class="modal-overlay" id="subjectPickerOverlay"></div>
+
+            <div class="modal-overlay" id="eventTypeOverlay"></div>
+
+            <div class="controls" id="controlsPanel">
+                <!-- Connection Section -->
+                <div class="control-section">
+                    <div class="section-title">Connection</div>
+                    <div class="section-content">
+                        <div class="button-row">
+                            <button class="btn btn-primary" id="connectBtn">Connect Device</button>
+                            <button class="btn btn-secondary" id="disconnectBtn" disabled>Disconnect</button>
+                        </div>
+                        <div class="info-row">
+                            <div class="status" id="status">Not Connected</div>
+                            <div class="signal-indicator" id="signalIndicator" style="display: none;">
+                                <div class="signal-bars">
+                                    <div class="signal-bar"></div>
+                                    <div class="signal-bar"></div>
+                                    <div class="signal-bar"></div>
+                                    <div class="signal-bar"></div>
+                                </div>
+                                <span id="signalText">Signal</span>
+                            </div>
+                        </div>
+                        <div class="info-row">
+                            <div class="battery-indicator" id="batteryIndicator" style="display: none;">
+                                <div class="battery-icon">
+                                    <div class="battery-level" id="batteryLevel"></div>
+                                </div>
+                                <span id="batteryText">--</span>
+                            </div>
+                            <div class="hr-zone-indicator" id="hrZoneIndicator" style="display: none;">
+                                <div class="hr-zone-dot"></div>
+                                <span id="hrZoneText">Zone 1</span>
+                            </div>
+                        </div>
+                        <div class="info-row">
+                            <div class="battery-indicator">
+                                <span style="color: var(--text-tertiary); font-weight: 500;">Data Quality:</span>
+                                <span id="dataQualityValue" style="color: var(--text-primary); font-weight: 700; margin-left: 8px;">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recording Section -->
+                <div class="control-section">
+                    <div class="section-title">Recording</div>
+                    <div class="section-content">
+                        <div class="button-row">
+                            <button class="btn btn-secondary" id="timestampBtn" disabled>📍 Mark Event</button>
+                            <button class="btn btn-danger" id="resetBtn">Reset Session</button>
+                        </div>
+
+                        <div class="subject-selector-row">
+                            <span class="section-sublabel">Subject</span>
+                            <div class="subject-chip-display" id="subjectChipDisplay">
+                                <span class="subject-chip-icon">👤</span>
+                                <span id="currentSubjectName">Anonymous</span>
+                                <span id="currentSubjectAgeTag"></span>
+                            </div>
+                            <button class="btn btn-secondary" id="changeSubjectBtn">Change</button>
+                        </div>
+
+                        <div class="protocol-selector-row">
+                            <span class="section-sublabel">Protocol</span>
+                            <div class="protocol-chip-display" id="protocolChipDisplay">
+                                <span class="protocol-chip-icon">🔬</span>
+                                <span id="currentProtocolName">Free Recording</span>
+                                <span id="currentProtocolDuration"></span>
+                            </div>
+                            <button class="btn btn-secondary" id="changeProtocolBtn">Change</button>
+                        </div>
+
+                        <div class="recording-timer" id="recordingTimer">⏱ 00:00</div>
+
+                        <div class="tag-input-section">
+                            <div class="tag-input-group">
+                                <input type="text" id="tagInput" placeholder="Add session tag...">
+                                <button class="btn btn-secondary" id="addTagBtn" style="min-width: 80px;">+ Tag</button>
+                            </div>
+                            <div class="current-tags" id="currentTags"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Export Section -->
+                <div class="control-section">
+                    <div class="section-title">Export Data</div>
+                    <div class="section-content">
+                        <div class="input-group">
+                            <input type="text" id="filename" placeholder="Session name">
+                        </div>
+                        <div class="button-row">
+                            <button class="btn btn-secondary" id="exportBtn" disabled>💾 Download</button>
+                            <button class="btn btn-secondary" id="copyBtn" disabled>📋 Copy</button>
+                            <button class="btn btn-primary" id="reportBtn" disabled>📄 Report</button>
+                        </div>
+                        <div class="toggle-group">
+                            <span class="toggle-label">RR only</span>
+                            <label class="switch">
+                                <input type="checkbox" id="txtToggle">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <div class="toggle-group">
+                            <span class="toggle-label">Include raw data</span>
+                            <label class="switch">
+                                <input type="checkbox" id="rawDataToggle">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Protocol Runner (visible only when a protocol is active) -->
+            <div id="protocolRunnerPanel" class="protocol-runner" style="display:none;">
+                <div class="protocol-runner-header">
+                    <div class="protocol-runner-title">
+                        <span class="protocol-runner-icon">🔬</span>
+                        <span id="protocolRunnerName">Protocol</span>
+                    </div>
+                    <div class="protocol-runner-btns">
+                        <button class="btn btn-secondary protocol-runner-btn" id="protocolSkipBtn">Skip →</button>
+                        <button class="btn btn-danger protocol-runner-btn" id="protocolStopBtn">■ Stop</button>
+                    </div>
+                </div>
+                <div class="protocol-runner-body">
+                    <div class="protocol-runner-phase-row">
+                        <span class="protocol-phase-label">Phase <span id="protocolPhaseNum">1</span>/<span id="protocolPhaseTotal">1</span>:</span>
+                        <span class="protocol-phase-name" id="protocolPhaseName">Phase name</span>
+                        <span class="protocol-phase-time" id="protocolPhaseTime">00:00</span>
+                    </div>
+                    <div class="protocol-progress-track">
+                        <div class="protocol-progress-fill" id="protocolProgressFill"></div>
+                    </div>
+                    <div class="protocol-next-phase" id="protocolNextPhase"></div>
+                </div>
+            </div>
+
+            <!-- Recording Mode Bar — visible only during active recording -->
+            <div id="recordModeBar" class="record-mode-bar" style="display:none;">
+                <div class="record-mode-bar-inner">
+                    <button class="mode-btn" id="focusModeBtn" title="Focus Mode — hide controls and charts">
+                        <span class="mode-btn-icon">🎯</span>
+                        <span class="mode-btn-label">Focus</span>
+                    </button>
+                    <button class="mode-btn" id="biofeedbackModeBtn" title="Biofeedback — guided breathing at 0.1 Hz">
+                        <span class="mode-btn-icon">🫁</span>
+                        <span class="mode-btn-label">Biofeedback</span>
+                    </button>
+                    <button class="mode-btn" id="monitorWindowBtn" title="Open subject monitor in a separate window">
+                        <span class="mode-btn-icon">📺</span>
+                        <span class="mode-btn-label">Monitor</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Heart Rate</div>
+                    <div class="stat-value"><span id="hrValue">--</span><span class="stat-unit">BPM</span></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">RMSSD (1 min)</div>
+                    <div class="stat-value"><span id="rmssdValue">--</span><span class="stat-unit">ms</span></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">RR Intervals</div>
+                    <div class="stat-value"><span id="samplesValue">0</span></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Avg RR (1 min)</div>
+                    <div class="stat-value"><span id="avgRRValue">--</span><span class="stat-unit">ms</span></div>
+                </div>
+            </div>
+
+            <div class="sri-container">
+                <div class="sri-header">
+                    <div class="sri-title">Stress Recovery Index</div>
+                    <div class="sri-subtitle">Real-time autonomic nervous system balance</div>
+                </div>
+
+                <button class="sri-info-btn" id="sriInfoBtn" title="Learn about SRI">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+                        <path d="M8 7V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                        <circle cx="8" cy="5" r="0.75" fill="currentColor"/>
+                    </svg>
+                </button>
+
+                <div class="modal-overlay" id="sriInfoOverlay"></div>
+                <div class="modal-panel sri-info-panel" id="sriInfoPanel">
+                    <div class="modal-header">
+                        <h2>About the Stress Recovery Index</h2>
+                        <button class="modal-close" id="sriInfoClose">✕</button>
+                    </div>
+                    <div class="modal-content">
+                        <div class="sri-info-section">
+                            <h3>What is SRI?</h3>
+                            <p>The Stress Recovery Index (SRI) is a composite score (0-100) that quantifies your autonomic nervous system balance and recovery capacity. Higher scores indicate better stress resilience and parasympathetic activity.</p>
+                        </div>
+
+                        <div class="sri-info-section">
+                            <h3>How is it Calculated?</h3>
+                            <p>SRI combines three validated Heart Rate Variability (HRV) metrics with scientifically-weighted contributions:</p>
+
+                            <div class="sri-component-explain">
+                                <div class="component-weight">35%</div>
+                                <div class="component-details">
+                                    <strong>RMSSD (Root Mean Square of Successive Differences)</strong>
+                                    <p>Measures beat-to-beat variability. Higher values indicate greater parasympathetic (rest-and-digest) activity. Optimal: >50ms</p>
+                                </div>
+                            </div>
+
+                            <div class="sri-component-explain">
+                                <div class="component-weight">35%</div>
+                                <div class="component-details">
+                                    <strong>LF/HF Ratio (Low Frequency / High Frequency)</strong>
+                                    <p>Balance between sympathetic and parasympathetic activity via frequency domain analysis. Lower ratios indicate better recovery. Optimal: 0.5-2.0</p>
+                                </div>
+                            </div>
+
+                            <div class="sri-component-explain">
+                                <div class="component-weight">30%</div>
+                                <div class="component-details">
+                                    <strong>HR Recovery Rate</strong>
+                                    <p>Speed of heart rate decrease from peak to baseline. Faster recovery indicates better cardiovascular fitness and autonomic regulation.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="sri-info-section">
+                            <h3>Interpretation</h3>
+                            <div class="sri-scale-guide">
+                                <div class="scale-item excellent">
+                                    <span class="scale-range">75-100</span>
+                                    <span class="scale-label">Excellent Recovery</span>
+                                    <p>Optimal autonomic balance, strong parasympathetic activity</p>
+                                </div>
+                                <div class="scale-item good">
+                                    <span class="scale-range">55-74</span>
+                                    <span class="scale-label">Good Recovery</span>
+                                    <p>Healthy stress response, adequate recovery capacity</p>
+                                </div>
+                                <div class="scale-item fair">
+                                    <span class="scale-range">35-54</span>
+                                    <span class="scale-label">Fair Recovery</span>
+                                    <p>Moderate stress detected, may benefit from relaxation techniques</p>
+                                </div>
+                                <div class="scale-item poor">
+                                    <span class="scale-range">0-34</span>
+                                    <span class="scale-label">Poor Recovery</span>
+                                    <p>High stress levels, prioritize recovery and rest</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="sri-info-section">
+                            <h3>Scientific Validation</h3>
+                            <p>This index is based on well-established HRV research:</p>
+                            <ul class="sri-references">
+                                <li><strong>RMSSD</strong>: Task Force of the European Society of Cardiology (1996) - Gold standard for parasympathetic activity measurement</li>
+                                <li><strong>Frequency Domain Analysis</strong>: Validated by hundreds of peer-reviewed studies for autonomic assessment</li>
+                                <li><strong>HR Recovery</strong>: Proven predictor of cardiovascular health and mortality risk (Cole et al., NEJM 1999)</li>
+                            </ul>
+                        </div>
+
+                        <div class="sri-info-section">
+                            <h3>Best Practices</h3>
+                            <ul class="sri-best-practices">
+                                <li>Measure SRI at consistent times (e.g., morning, before exercise)</li>
+                                <li>Allow at least 2 minutes of stable recording for accurate results</li>
+                                <li>Track trends over days/weeks rather than single measurements</li>
+                                <li>Use alongside subjective stress assessment for complete picture</li>
+                                <li>Ensure proper sensor contact for data quality >95%</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sri-display">
+                    <div class="sri-gauge-wrapper">
+                        <canvas id="sriGauge"></canvas>
+                        <div class="sri-score-overlay">
+                            <div class="sri-score-value" id="sriValue">--</div>
+                            <div class="sri-score-label">SRI Score</div>
+                        </div>
+                    </div>
+                    <div class="sri-metrics">
+                        <div class="sri-metric">
+                            <div class="sri-metric-label">RMSSD</div>
+                            <div class="sri-metric-value" id="sriRMSSD">--</div>
+                        </div>
+                        <div class="sri-metric">
+                            <div class="sri-metric-label">LF/HF Ratio</div>
+                            <div class="sri-metric-value" id="sriLFHF">--</div>
+                        </div>
+                        <div class="sri-metric">
+                            <div class="sri-metric-label">HR Recovery</div>
+                            <div class="sri-metric-value" id="sriHRRecovery">--</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="sri-status" id="sriStatus">
+                    <div class="sri-status-icon">⏱️</div>
+                    <div class="sri-status-text">Calculating... Need at least 2 minutes of data</div>
+                </div>
+            </div>
+
+            <div class="grid-stack" id="chartsGrid">
+                <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="0" gs-id="ecg" id="ecgItem">
+                    <div class="grid-stack-item-content">
+                        <div class="chart-container">
+                            <div class="chart-title">ECG Signal</div>
+                            <div id="ecgChart" class="gs-chart-div"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="0" gs-id="rr" id="rrItem">
+                    <div class="grid-stack-item-content">
+                        <div class="chart-container">
+                            <div class="chart-title">RR Intervals</div>
+                            <div id="rrChart" class="gs-chart-div"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="5" gs-id="rollingRMSSD" id="rollingRMSSDItem">
+                    <div class="grid-stack-item-content">
+                        <div class="chart-container">
+                            <div class="chart-title">Rolling RMSSD (1 min)</div>
+                            <div id="rollingRMSSDChart" class="gs-chart-div"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="5" gs-id="poincare" id="poincareItem">
+                    <div class="grid-stack-item-content">
+                        <div class="chart-container">
+                            <div class="chart-title">Poincaré Plot</div>
+                            <div id="poincareChart" class="gs-chart-div"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-stack-item" gs-w="12" gs-h="5" gs-x="0" gs-y="10" gs-id="psd" id="psdItem">
+                    <div class="grid-stack-item-content">
+                        <div class="chart-container">
+                            <div class="chart-title">HRV Wavelet Spectrogram</div>
+                            <div id="psdChart" class="gs-chart-div"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="15" gs-id="hr" id="hrItem">
+                    <div class="grid-stack-item-content">
+                        <div class="chart-container">
+                            <div class="chart-title">Heart Rate + Zones</div>
+                            <div id="hrChart" class="gs-chart-div"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="15" gs-id="vagalProxy" id="vagalProxyItem">
+                    <div class="grid-stack-item-content">
+                        <div class="chart-container">
+                            <div class="chart-title">Vagal Proxy (RMSSD/SDNN)</div>
+                            <div id="vagalProxyChart" class="gs-chart-div"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="footer">
+            Made with ❤️ by <a href="https://github.com/matcasti" target="_blank" rel="noopener">Matías Castillo-Aguilar</a>
+        </div>
+        </div><!-- /#tab-record -->
+
+        <!-- ── History Tab ──────────────────────────────────── -->
+        <div id="tab-history" class="tab-panel">
+            <div class="history-tab-layout">
+                <div class="history-tab-toolbar">
+                    <div class="history-toolbar-left">
+                        <input type="search" id="historySearch" placeholder="🔍 Search sessions...">
+                        <select id="subjectFilter">
+                            <option value="">All Subjects</option>
+                        </select>
+                        <select id="tagFilter">
+                            <option value="">All Tags</option>
+                        </select>
+                        <select id="sortFilter">
+                            <option value="newest">Newest First</option>
+                            <option value="oldest">Oldest First</option>
+                            <option value="longest">Longest Duration</option>
+                            <option value="shortest">Shortest Duration</option>
+                        </select>
+                    </div>
+                    <div class="history-toolbar-right">
+                        <div class="history-view-tabs">
+                            <button class="history-tab active" id="tabCards">◈ Cards</button>
+                            <button class="history-tab" id="tabTable">⊞ Table</button>
+                        </div>
+                        <button class="btn btn-accent" id="bulkDownloadBtn">⬇ Download</button>
+                        <select id="bulkFormatSelect">
+                            <option value="csv">CSV</option>
+                            <option value="txt">TXT (RR only)</option>
+                        </select>
+                        <button class="btn btn-danger" id="clearAllBtn">🗑️ Clear All</button>
+                    </div>
+                </div>
+                <div class="history-tab-content">
+                    <div id="historyCardsView">
+                        <div class="history-cards-grid" id="historyContent">
+                            <div class="history-empty">
+                                <span class="empty-icon">📊</span>
+                                <p>No saved sessions yet</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="historyTableView" style="display:none;">
+                        <div class="history-table-scroll">
+                            <table class="history-table" id="historyTable">
+                                <thead>
+                                    <tr>
+                                        <th><input type="checkbox" id="selectAllRows" title="Select all"></th>
+                                        <th>Date</th>
+                                        <th>Name</th>
+                                        <th>Subject</th>
+                                        <th>Duration</th>
+                                        <th>Samples</th>
+                                        <th>Avg RR</th>
+                                        <th>RMSSD</th>
+                                        <th>SRI</th>
+                                        <th>Events</th>
+                                        <th>Tags</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="historyTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div><!-- /#tab-history -->
+
+        <!-- ── Analyze Tab ───────────────────────────────────── -->
+        <div id="tab-analyze" class="tab-panel">
+            <div class="analyze-layout">
+
+                <!-- Toolbar -->
+                <div class="analyze-toolbar">
+                    <div class="analyze-subtabs">
+                        <button class="analyze-subtab is-active" data-subtab="trends">📈 Trends</button>
+                        <button class="analyze-subtab" data-subtab="comparison">⊞ Comparison</button>
+                        <button class="analyze-subtab" data-subtab="summary">📊 Summary</button>
+                    </div>
+                    <div class="analyze-toolbar-right">
+                        <select id="analyzeSubjectFilter">
+                            <option value="">All Subjects</option>
+                        </select>
+                        <button class="btn btn-secondary" id="analyzeRefreshBtn"
+                                style="min-width:40px;padding:6px 10px;font-size:16px;">↺</button>
+                    </div>
+                </div>
+
+                <!-- Trends section -->
+                <div id="analyze-trends" class="analyze-section is-active">
+                    <div class="analyze-charts-col">
+                        <div class="analyze-chart-card">
+                            <div class="analyze-chart-label">Stress Recovery Index over time</div>
+                            <div id="analyzeChartSRI" class="analyze-chart-div"></div>
+                        </div>
+                        <div class="analyze-chart-card">
+                            <div class="analyze-chart-label">RMSSD over time</div>
+                            <div id="analyzeChartRMSSD" class="analyze-chart-div"></div>
+                        </div>
+                        <div class="analyze-chart-card">
+                            <div class="analyze-chart-label">LF/HF Ratio over time</div>
+                            <div id="analyzeChartLFHF" class="analyze-chart-div"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Comparison section -->
+                <div id="analyze-comparison" class="analyze-section">
+                    <div class="analyze-comparison-layout">
+                        <div class="analyze-comparison-sidebar">
+                            <div class="analyze-sidebar-header">
+                                <div class="section-title" style="margin-bottom:0;">Sessions</div>
+                                <select id="comparisonMetric">
+                                    <option value="rmssd">Rolling RMSSD</option>
+                                    <option value="rr">RR Intervals</option>
+                                    <option value="hr">Heart Rate</option>
+                                </select>
+                                <div style="font-size:11px;color:var(--text-tertiary);">Select up to 6 sessions</div>
+                            </div>
+                            <div id="comparisonSessionList" class="comparison-session-list"></div>
+                        </div>
+                        <div class="analyze-comparison-main">
+                            <div class="analyze-chart-card" style="height:100%;display:flex;flex-direction:column;">
+                                <div class="analyze-chart-label" id="comparisonChartLabel">Select sessions to compare</div>
+                                <div id="analyzeChartComparison" class="analyze-chart-div" style="flex:1;min-height:320px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Summary section -->
+                <div id="analyze-summary" class="analyze-section">
+                    <div id="analyzeSummaryContent"></div>
+                </div>
+
             </div>
         </div>
 
-        <!-- Event Type Modal -->
-        <div class="modal-panel" id="eventTypePanel">
+        <!-- ── Subjects Tab ──────────────────────────────────── -->
+        <div id="tab-subjects" class="tab-panel">
+            <div class="subjects-tab-layout">
+                <div class="subjects-tab-toolbar">
+                    <div class="subjects-toolbar-left">
+                        <span class="subjects-count" id="subjectsCount">0 subjects</span>
+                    </div>
+                    <div class="subjects-toolbar-right">
+                        <button class="btn btn-primary" id="addSubjectBtn">+ Add Subject</button>
+                    </div>
+                </div>
+                <div class="subjects-tab-content" id="subjectsContent">
+                    <div class="history-empty">
+                        <span class="empty-icon">👤</span>
+                        <p>No subjects added yet</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Export Tab ────────────────────────────────────── -->
+        <div id="tab-export" class="tab-panel">
+            <div class="export-layout">
+
+                <!-- Toolbar -->
+                <div class="export-toolbar">
+                    <div class="export-toolbar-left">
+                        <select id="exportSubjectFilter">
+                            <option value="">All Subjects</option>
+                        </select>
+                        <select id="exportTagFilter">
+                            <option value="">All Tags</option>
+                        </select>
+                        <select id="exportSortFilter">
+                            <option value="newest">Newest First</option>
+                            <option value="oldest">Oldest First</option>
+                            <option value="longest">Longest</option>
+                            <option value="shortest">Shortest</option>
+                        </select>
+                    </div>
+                    <div class="export-toolbar-right">
+                        <span class="export-selected-count" id="exportSelectedCount">None selected</span>
+                        <button class="btn btn-secondary" id="exportSelectAllBtn">☑ Select All</button>
+                        <button class="btn btn-secondary" id="exportDeselectAllBtn">☐ None</button>
+                    </div>
+                </div>
+
+                <!-- Session list -->
+                <div class="export-session-list" id="exportSessionList">
+                    <div class="history-empty" style="padding:60px 20px;">
+                        <span class="empty-icon">💾</span>
+                        <p>No sessions yet</p>
+                    </div>
+                </div>
+
+                <!-- Export action cards -->
+                <div class="export-actions-footer">
+                    <div class="export-action-card">
+                        <div class="export-action-left">
+                            <div class="export-action-icon">📊</div>
+                            <div class="export-action-info">
+                                <div class="export-action-title">Aggregate Summary</div>
+                                <div class="export-action-desc">One row per session · 24 HRV metrics · research CSV</div>
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" id="exportSummaryBtn" disabled>Export CSV</button>
+                    </div>
+                    <div class="export-action-card">
+                        <div class="export-action-left">
+                            <div class="export-action-icon">📁</div>
+                            <div class="export-action-info">
+                                <div class="export-action-title">Raw Interval Files</div>
+                                <div class="export-action-desc">Full RR data · one file per session · ZIP</div>
+                            </div>
+                        </div>
+                        <div class="export-action-controls">
+                            <select id="exportZipFormat">
+                                <option value="csv">CSV</option>
+                                <option value="txt">TXT (RR only)</option>
+                            </select>
+                            <button class="btn btn-secondary" id="exportZipBtn" disabled>Download ZIP</button>
+                        </div>
+                    </div>
+                    <div class="export-action-card">
+                        <div class="export-action-left">
+                            <div class="export-action-icon export-json-icon">{ }</div>
+                            <div class="export-action-info">
+                                <div class="export-action-title">Structured JSON</div>
+                                <div class="export-action-desc">Nested metadata + metrics · programmatic use</div>
+                            </div>
+                        </div>
+                        <button class="btn btn-secondary" id="exportJsonBtn" disabled>Export JSON</button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Subject Edit Modal — container-level so accessible from any tab -->
+        <div class="modal-panel" id="subjectEditPanel">
             <div class="modal-header">
-                <h2>Mark Event</h2>
-                <button class="modal-close" id="eventTypeClose">✕</button>
+                <h2>Edit Subject</h2>
+                <button class="modal-close" id="subjectEditClose">✕</button>
             </div>
             <div class="modal-content">
-                <div class="section-title">Select Event Type</div>
-                <div class="event-type-selector" id="eventTypeSelector">
-                    <button class="event-type-btn" data-type="Start">🏁 Start</button>
-                    <button class="event-type-btn" data-type="Exercise">💪 Exercise</button>
-                    <button class="event-type-btn" data-type="Rest">😌 Rest</button>
-                    <button class="event-type-btn" data-type="Peak">⚡ Peak</button>
-                    <button class="event-type-btn" data-type="Recovery">🔄 Recovery</button>
-                    <button class="event-type-btn" data-type="Breathe">🫁 Breathe</button>
-                    <button class="event-type-btn" data-type="Note">📝 Note</button>
-                    <button class="event-type-btn" data-type="Custom">✨ Custom</button>
+                <input type="hidden" id="editSubjectId">
+                <div class="section-content">
+                    <div class="input-group">
+                        <input type="text" id="editSubjectName" placeholder="Name...">
+                    </div>
+                    <div class="input-group" style="margin-top: 8px;">
+                        <input type="number" id="editSubjectAge" placeholder="Age" min="1" max="120">
+                    </div>
                 </div>
-                <div class="annotation-input">
-                    <input type="text" id="eventAnnotation" placeholder="Add note (optional)...">
-                    <button class="btn btn-primary" id="addEventBtn">Add</button>
-                </div>
-                <div class="section-title" style="margin-top: 24px;">Recent Events</div>
-                <div class="annotations-list" id="annotationsList"></div>
-            </div>
-        </div>
-
-        <!-- Overlays -->
-        <div class="modal-overlay" id="historyOverlay"></div>
-
-        <!-- History Table Modal (separate wide window) -->
-        <div class="modal-overlay" id="historyTableOverlay"></div>
-        <div class="history-table-modal" id="historyTableModal">
-            <div class="modal-header">
-                <h2>📋 Session Table</h2>
-                <button class="modal-close" id="historyTableClose">✕</button>
-            </div>
-            <div class="search-filter-section history-table-filters">
-                <div class="search-box">
-                    <input type="search" id="historyTableSearch" placeholder="🔍 Search sessions...">
-                </div>
-                <div class="filter-controls">
-                    <select id="historyTableTagFilter">
-                        <option value="">All Tags</option>
-                    </select>
-                    <select id="historyTableSortFilter">
-                        <option value="newest">Newest First</option>
-                        <option value="oldest">Oldest First</option>
-                        <option value="longest">Longest Duration</option>
-                        <option value="shortest">Shortest Duration</option>
-                    </select>
-                </div>
-            </div>
-            <div class="history-table-wrapper" id="historyTableContent">
-                <table class="history-table" id="historyTable">
-                    <thead>
-                        <tr>
-                            <th><input type="checkbox" id="selectAllRows" title="Select all"></th>
-                            <th>Date</th>
-                            <th>Name</th>
-                            <th>Duration</th>
-                            <th>Samples</th>
-                            <th>Avg RR</th>
-                            <th>RMSSD</th>
-                            <th>SRI</th>
-                            <th>Events</th>
-                            <th>Tags</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="historyTableBody"></tbody>
-                </table>
             </div>
             <div class="modal-actions">
-                <button class="btn btn-accent" id="historyTableBulkDownloadBtn" style="flex:1;">⬇ Download</button>
-                <div class="bulk-format-select">
-                    <select id="historyTableFormatSelect">
-                        <option value="csv">CSV</option>
-                        <option value="txt">TXT (RR only)</option>
-                    </select>
-                </div>
+                <button class="btn btn-primary" id="saveSubjectEditBtn" style="flex:1;">Save</button>
+                <button class="btn btn-secondary" id="cancelSubjectEditBtn" style="flex:1;">Cancel</button>
             </div>
         </div>
+        <div class="modal-overlay" id="subjectEditOverlay"></div>
 
-        <div class="modal-overlay" id="eventTypeOverlay"></div>
-
-        <!-- Settings Modal -->
+        <!-- Settings Modal — container-level so accessible from any tab -->
         <div class="modal-overlay" id="settingsOverlay"></div>
         <div class="modal-panel" id="settingsPanel">
             <div class="modal-header">
@@ -169,14 +791,13 @@
             </div>
             <div class="modal-content">
 
-                <!-- ── Profile ── -->
                 <div class="sett-section">
                     <div class="sett-section-head"><span class="sett-section-icon">👤</span>Profile</div>
                     <div class="sett-card">
                         <div class="sett-row sett-row-stacked">
                             <div class="sett-row-info">
                                 <span class="sett-row-label">Age</span>
-                                <span class="sett-row-sub">Used for max HR and training zone boundaries</span>
+                                <span class="sett-row-sub">Default fallback when no subject is active</span>
                             </div>
                             <input type="range" id="settingsAge" min="10" max="100" value="30" class="sett-slider">
                             <div class="sett-slider-labels">
@@ -189,7 +810,6 @@
                     </div>
                 </div>
 
-                <!-- ── Recording ── -->
                 <div class="sett-section">
                     <div class="sett-section-head"><span class="sett-section-icon">🎙️</span>Recording</div>
                     <div class="sett-card">
@@ -221,7 +841,6 @@
                     </div>
                 </div>
 
-                <!-- ── HRV Analysis ── -->
                 <div class="sett-section">
                     <div class="sett-section-head"><span class="sett-section-icon">📊</span>HRV Analysis</div>
                     <div class="sett-card">
@@ -252,74 +871,51 @@
                     </div>
                 </div>
 
-                <!-- ── Visible Charts ── -->
                 <div class="sett-section">
                     <div class="sett-section-head"><span class="sett-section-icon">📈</span>Visible Charts</div>
                     <div class="sett-card sett-toggles">
                         <label class="sett-toggle-row">
                             <div class="sett-toggle-icon">🫀</div>
-                            <div class="sett-toggle-info">
-                                <span>ECG Signal</span>
-                                <span>Raw electrode waveform</span>
-                            </div>
+                            <div class="sett-toggle-info"><span>ECG Signal</span><span>Raw electrode waveform</span></div>
                             <input type="checkbox" id="show_ecg" checked class="sett-checkbox">
                         </label>
                         <label class="sett-toggle-row">
                             <div class="sett-toggle-icon">📈</div>
-                            <div class="sett-toggle-info">
-                                <span>RR Intervals</span>
-                                <span>Beat-to-beat interval time series</span>
-                            </div>
+                            <div class="sett-toggle-info"><span>RR Intervals</span><span>Beat-to-beat interval time series</span></div>
                             <input type="checkbox" id="show_rr" checked class="sett-checkbox">
                         </label>
                         <label class="sett-toggle-row">
                             <div class="sett-toggle-icon">〰️</div>
-                            <div class="sett-toggle-info">
-                                <span>Rolling RMSSD</span>
-                                <span>Short-term HRV over time</span>
-                            </div>
+                            <div class="sett-toggle-info"><span>Rolling RMSSD</span><span>Short-term HRV over time</span></div>
                             <input type="checkbox" id="show_rollingRMSSD" checked class="sett-checkbox">
                         </label>
                         <label class="sett-toggle-row">
                             <div class="sett-toggle-icon">🔵</div>
-                            <div class="sett-toggle-info">
-                                <span>Poincaré Plot</span>
-                                <span>SD1/SD2 geometric HRV analysis</span>
-                            </div>
+                            <div class="sett-toggle-info"><span>Poincaré Plot</span><span>SD1/SD2 geometric HRV analysis</span></div>
                             <input type="checkbox" id="show_poincare" checked class="sett-checkbox">
                         </label>
                         <label class="sett-toggle-row">
                             <div class="sett-toggle-icon">📊</div>
-                            <div class="sett-toggle-info">
-                                <span>HRV Wavelet Spectrogram</span>
-                                <span>Morlet CWT time-frequency analysis</span>
-                            </div>
+                            <div class="sett-toggle-info"><span>HRV Wavelet Spectrogram</span><span>Morlet CWT time-frequency analysis</span></div>
                             <input type="checkbox" id="show_psd" checked class="sett-checkbox">
                         </label>
                         <label class="sett-toggle-row">
                             <div class="sett-toggle-icon">💓</div>
-                            <div class="sett-toggle-info">
-                                <span>Heart Rate + Zones</span>
-                                <span>Continuous HR with coloured training zones</span>
-                            </div>
+                            <div class="sett-toggle-info"><span>Heart Rate + Zones</span><span>Continuous HR with coloured training zones</span></div>
                             <input type="checkbox" id="show_hr" checked class="sett-checkbox">
                         </label>
                         <label class="sett-toggle-row">
                             <div class="sett-toggle-icon">🧠</div>
-                            <div class="sett-toggle-info">
-                                <span>Vagal Proxy (RMSSD/SDNN)</span>
-                                <span>Rolling autonomic balance index</span>
-                            </div>
+                            <div class="sett-toggle-info"><span>Vagal Proxy (RMSSD/SDNN)</span><span>Rolling autonomic balance index</span></div>
                             <input type="checkbox" id="show_vagalProxy" checked class="sett-checkbox">
                         </label>
                     </div>
                 </div>
 
-                <!-- ── Layout ── -->
                 <div class="sett-section">
                     <div class="sett-section-head"><span class="sett-section-icon">⊞</span>Chart Layout</div>
                     <div class="sett-card">
-                        <p class="sett-hint-text">Drag charts by their title bar · Resize from any edge or corner · Layout is saved automatically between sessions.</p>
+                        <p class="sett-hint-text">Drag charts by their title bar · Resize from any edge or corner · Layout is saved automatically.</p>
                         <button class="btn btn-secondary" id="resetLayoutBtn" style="width:100%;margin-top:12px;">↺ Reset to Default Layout</button>
                     </div>
                 </div>
@@ -327,312 +923,41 @@
             </div><!-- /.modal-content -->
         </div><!-- /#settingsPanel -->
 
-        <div class="controls" id="controlsPanel">
-            <!-- Connection Section -->
-            <div class="control-section">
-                <div class="section-title">Connection</div>
-                <div class="section-content">
-                    <div class="button-row">
-                        <button class="btn btn-primary" id="connectBtn">Connect Device</button>
-                        <button class="btn btn-secondary" id="disconnectBtn" disabled>Disconnect</button>
-                    </div>
-                    <div class="info-row">
-                        <div class="status" id="status">Not Connected</div>
-                        <div class="signal-indicator" id="signalIndicator" style="display: none;">
-                            <div class="signal-bars">
-                                <div class="signal-bar"></div>
-                                <div class="signal-bar"></div>
-                                <div class="signal-bar"></div>
-                                <div class="signal-bar"></div>
-                            </div>
-                            <span id="signalText">Signal</span>
-                        </div>
-                    </div>
-                    <div class="info-row">
-                        <div class="battery-indicator" id="batteryIndicator" style="display: none;">
-                            <div class="battery-icon">
-                                <div class="battery-level" id="batteryLevel"></div>
-                            </div>
-                            <span id="batteryText">--</span>
-                        </div>
-                        <div class="hr-zone-indicator" id="hrZoneIndicator" style="display: none;">
-                            <div class="hr-zone-dot"></div>
-                            <span id="hrZoneText">Zone 1</span>
-                        </div>
-                    </div>
-                    <div class="info-row">
-                        <div class="battery-indicator">
-                            <span style="color: var(--text-tertiary); font-weight: 500;">Data Quality:</span>
-                            <span id="dataQualityValue" style="color: var(--text-primary); font-weight: 700; margin-left: 8px;">--</span>
+        <!-- Biofeedback Overlay — full-screen, triggered from mode bar -->
+        <div id="biofeedbackOverlay" class="biofeedback-overlay" style="display:none;">
+            <button class="biofeedback-exit" id="biofeedbackExitBtn">✕ Exit Biofeedback</button>
+            <div class="biofeedback-subject" id="biofeedbackSubjectName"></div>
+            <div class="biofeedback-center">
+                <div class="biofeedback-ring-wrap">
+                    <div class="biofeedback-ring" id="biofeedbackRing">
+                        <div class="biofeedback-ring-inner">
+                            <div class="biofeedback-sri-score" id="biofeedbackSRI">--</div>
+                            <div class="biofeedback-sri-label">SRI</div>
                         </div>
                     </div>
                 </div>
+                <div class="biofeedback-breathe-text" id="biofeedbackBreatheText">Breathe...</div>
+                <div class="biofeedback-breathe-sub" id="biofeedbackBreatheSub"></div>
             </div>
-
-            <!-- Recording Section -->
-            <div class="control-section">
-                <div class="section-title">Recording</div>
-                <div class="section-content">
-                    <div class="button-row">
-                        <button class="btn btn-secondary" id="timestampBtn" disabled>📍 Mark Event</button>
-                        <button class="btn btn-danger" id="resetBtn">Reset Session</button>
-                    </div>
-                    <div class="recording-timer" id="recordingTimer">⏱ 00:00</div>
-                    <div class="tag-input-section">
-                        <div class="tag-input-group">
-                            <input type="text" id="tagInput" placeholder="Add session tag...">
-                            <button class="btn btn-secondary" id="addTagBtn" style="min-width: 80px;">+ Tag</button>
-                        </div>
-                        <div class="current-tags" id="currentTags"></div>
-                    </div>
+            <div class="biofeedback-metrics">
+                <div class="biofeedback-metric">
+                    <div class="biofeedback-metric-label">Heart Rate</div>
+                    <div class="biofeedback-metric-value" id="biofeedbackHR">--</div>
+                    <div class="biofeedback-metric-unit">bpm</div>
                 </div>
-            </div>
-
-            <!-- Export Section -->
-            <div class="control-section">
-                <div class="section-title">Export Data</div>
-                <div class="section-content">
-                    <div class="input-group">
-                        <input type="text" id="filename" placeholder="Session name">
-                    </div>
-                    <div class="button-row">
-                        <button class="btn btn-secondary" id="exportBtn" disabled>💾 Download</button>
-                        <button class="btn btn-secondary" id="copyBtn" disabled>📋 Copy</button>
-                        <button class="btn btn-primary" id="reportBtn" disabled>📄 Report</button>
-                    </div>
-                    <div class="toggle-group">
-                        <span class="toggle-label">RR only</span>
-                        <label class="switch">
-                            <input type="checkbox" id="txtToggle">
-                            <span class="slider"></span>
-                        </label>
-                    </div>
-                    <div class="toggle-group">
-                        <span class="toggle-label">Include raw data</span>
-                        <label class="switch">
-                            <input type="checkbox" id="rawDataToggle">
-                            <span class="slider"></span>
-                        </label>
-                    </div>
+                <div class="biofeedback-metric biofeedback-metric--center">
+                    <div class="biofeedback-metric-label">Zone</div>
+                    <div class="biofeedback-metric-value" id="biofeedbackZone" style="font-size:clamp(1em,3vw,1.4em);">—</div>
+                </div>
+                <div class="biofeedback-metric">
+                    <div class="biofeedback-metric-label">RMSSD</div>
+                    <div class="biofeedback-metric-value" id="biofeedbackRMSSD">--</div>
+                    <div class="biofeedback-metric-unit">ms</div>
                 </div>
             </div>
         </div>
 
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Heart Rate</div>
-                <div class="stat-value"><span id="hrValue">--</span><span class="stat-unit">BPM</span></div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">RMSSD (1 min)</div>
-                <div class="stat-value"><span id="rmssdValue">--</span><span class="stat-unit">ms</span></div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">RR Intervals</div>
-                <div class="stat-value"><span id="samplesValue">0</span></div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Avg RR (1 min)</div>
-                <div class="stat-value"><span id="avgRRValue">--</span><span class="stat-unit">ms</span></div>
-            </div>
-        </div>
-
-        <div class="sri-container">
-            <div class="sri-header">
-                <div class="sri-title">Stress Recovery Index</div>
-                <div class="sri-subtitle">Real-time autonomic nervous system balance</div>
-            </div>
-
-            <button class="sri-info-btn" id="sriInfoBtn" title="Learn about SRI">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
-                    <path d="M8 7V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    <circle cx="8" cy="5" r="0.75" fill="currentColor"/>
-                </svg>
-            </button>
-
-            <div class="modal-overlay" id="sriInfoOverlay"></div>
-            <div class="modal-panel sri-info-panel" id="sriInfoPanel">
-                <div class="modal-header">
-                    <h2>About the Stress Recovery Index</h2>
-                    <button class="modal-close" id="sriInfoClose">✕</button>
-                </div>
-                <div class="modal-content">
-                    <div class="sri-info-section">
-                        <h3>What is SRI?</h3>
-                        <p>The Stress Recovery Index (SRI) is a composite score (0-100) that quantifies your autonomic nervous system balance and recovery capacity. Higher scores indicate better stress resilience and parasympathetic activity.</p>
-                    </div>
-
-                    <div class="sri-info-section">
-                        <h3>How is it Calculated?</h3>
-                        <p>SRI combines three validated Heart Rate Variability (HRV) metrics with scientifically-weighted contributions:</p>
-
-                        <div class="sri-component-explain">
-                            <div class="component-weight">35%</div>
-                            <div class="component-details">
-                                <strong>RMSSD (Root Mean Square of Successive Differences)</strong>
-                                <p>Measures beat-to-beat variability. Higher values indicate greater parasympathetic (rest-and-digest) activity. Optimal: >50ms</p>
-                            </div>
-                        </div>
-
-                        <div class="sri-component-explain">
-                            <div class="component-weight">35%</div>
-                            <div class="component-details">
-                                <strong>LF/HF Ratio (Low Frequency / High Frequency)</strong>
-                                <p>Balance between sympathetic and parasympathetic activity via frequency domain analysis. Lower ratios indicate better recovery. Optimal: 0.5-2.0</p>
-                            </div>
-                        </div>
-
-                        <div class="sri-component-explain">
-                            <div class="component-weight">30%</div>
-                            <div class="component-details">
-                                <strong>HR Recovery Rate</strong>
-                                <p>Speed of heart rate decrease from peak to baseline. Faster recovery indicates better cardiovascular fitness and autonomic regulation.</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="sri-info-section">
-                        <h3>Interpretation</h3>
-                        <div class="sri-scale-guide">
-                            <div class="scale-item excellent">
-                                <span class="scale-range">75-100</span>
-                                <span class="scale-label">Excellent Recovery</span>
-                                <p>Optimal autonomic balance, strong parasympathetic activity</p>
-                            </div>
-                            <div class="scale-item good">
-                                <span class="scale-range">55-74</span>
-                                <span class="scale-label">Good Recovery</span>
-                                <p>Healthy stress response, adequate recovery capacity</p>
-                            </div>
-                            <div class="scale-item fair">
-                                <span class="scale-range">35-54</span>
-                                <span class="scale-label">Fair Recovery</span>
-                                <p>Moderate stress detected, may benefit from relaxation techniques</p>
-                            </div>
-                            <div class="scale-item poor">
-                                <span class="scale-range">0-34</span>
-                                <span class="scale-label">Poor Recovery</span>
-                                <p>High stress levels, prioritize recovery and rest</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="sri-info-section">
-                        <h3>Scientific Validation</h3>
-                        <p>This index is based on well-established HRV research:</p>
-                        <ul class="sri-references">
-                            <li><strong>RMSSD</strong>: Task Force of the European Society of Cardiology (1996) - Gold standard for parasympathetic activity measurement</li>
-                            <li><strong>Frequency Domain Analysis</strong>: Validated by hundreds of peer-reviewed studies for autonomic assessment</li>
-                            <li><strong>HR Recovery</strong>: Proven predictor of cardiovascular health and mortality risk (Cole et al., NEJM 1999)</li>
-                        </ul>
-                    </div>
-
-                    <div class="sri-info-section">
-                        <h3>Best Practices</h3>
-                        <ul class="sri-best-practices">
-                            <li>Measure SRI at consistent times (e.g., morning, before exercise)</li>
-                            <li>Allow at least 2 minutes of stable recording for accurate results</li>
-                            <li>Track trends over days/weeks rather than single measurements</li>
-                            <li>Use alongside subjective stress assessment for complete picture</li>
-                            <li>Ensure proper sensor contact for data quality >95%</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-
-            <div class="sri-display">
-                <div class="sri-gauge-wrapper">
-                    <canvas id="sriGauge"></canvas>
-                    <div class="sri-score-overlay">
-                        <div class="sri-score-value" id="sriValue">--</div>
-                        <div class="sri-score-label">SRI Score</div>
-                    </div>
-                </div>
-                <div class="sri-metrics">
-                    <div class="sri-metric">
-                        <div class="sri-metric-label">RMSSD</div>
-                        <div class="sri-metric-value" id="sriRMSSD">--</div>
-                    </div>
-                    <div class="sri-metric">
-                        <div class="sri-metric-label">LF/HF Ratio</div>
-                        <div class="sri-metric-value" id="sriLFHF">--</div>
-                    </div>
-                    <div class="sri-metric">
-                        <div class="sri-metric-label">HR Recovery</div>
-                        <div class="sri-metric-value" id="sriHRRecovery">--</div>
-                    </div>
-                </div>
-            </div>
-            <div class="sri-status" id="sriStatus">
-                <div class="sri-status-icon">⏱️</div>
-                <div class="sri-status-text">Calculating... Need at least 2 minutes of data</div>
-            </div>
-        </div>
-
-        <div class="grid-stack" id="chartsGrid">
-            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="0" gs-id="ecg" id="ecgItem">
-                <div class="grid-stack-item-content">
-                    <div class="chart-container">
-                        <div class="chart-title">ECG Signal</div>
-                        <div id="ecgChart" class="gs-chart-div"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="0" gs-id="rr" id="rrItem">
-                <div class="grid-stack-item-content">
-                    <div class="chart-container">
-                        <div class="chart-title">RR Intervals</div>
-                        <div id="rrChart" class="gs-chart-div"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="5" gs-id="rollingRMSSD" id="rollingRMSSDItem">
-                <div class="grid-stack-item-content">
-                    <div class="chart-container">
-                        <div class="chart-title">Rolling RMSSD (1 min)</div>
-                        <div id="rollingRMSSDChart" class="gs-chart-div"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="5" gs-id="poincare" id="poincareItem">
-                <div class="grid-stack-item-content">
-                    <div class="chart-container">
-                        <div class="chart-title">Poincaré Plot</div>
-                        <div id="poincareChart" class="gs-chart-div"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="grid-stack-item" gs-w="12" gs-h="5" gs-x="0" gs-y="10" gs-id="psd" id="psdItem">
-                <div class="grid-stack-item-content">
-                    <div class="chart-container">
-                        <div class="chart-title">HRV Wavelet Spectrogram</div>
-                        <div id="psdChart" class="gs-chart-div"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="0" gs-y="15" gs-id="hr" id="hrItem">
-                <div class="grid-stack-item-content">
-                    <div class="chart-container">
-                        <div class="chart-title">Heart Rate + Zones</div>
-                        <div id="hrChart" class="gs-chart-div"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="grid-stack-item" gs-w="6" gs-h="5" gs-x="6" gs-y="15" gs-id="vagalProxy" id="vagalProxyItem">
-                <div class="grid-stack-item-content">
-                    <div class="chart-container">
-                        <div class="chart-title">Vagal Proxy (RMSSD/SDNN)</div>
-                        <div id="vagalProxyChart" class="gs-chart-div"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="footer">
-            Made with ❤️ by <a href="https://github.com/matcasti" target="_blank" rel="noopener">Matías Castillo-Aguilar</a>
-        </div>
-    </div>
+    </div><!-- /.container -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/gridstack@8.4.0/dist/gridstack-all.js"></script>
     <script src="engine.js"></script>
