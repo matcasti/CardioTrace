@@ -2305,7 +2305,7 @@ function smoothSpectrum(power, windowSize) {
 
 const CWT_FS      = 4;    // Hz  – uniform interpolation rate
 const CWT_OMEGA0  = 6;    // rad – Morlet central frequency
-const CWT_VOICES  = 22;   // log-spaced frequency bins
+const CWT_VOICES  = 32;   // log-spaced frequency bins
 const CWT_F_MIN   = 0.005;
 const CWT_F_MAX   = 0.40;
 
@@ -2515,6 +2515,11 @@ function updateSpectrogramChart() {
         })
     );
 
+    const allZ = Z.flatMap(row => row).filter(Number.isFinite);
+    allZ.sort((a, b) => a - b);
+    const zmin = allZ[Math.floor(allZ.length * 0.05)] ?? -8;
+    const zmax = allZ[Math.floor(allZ.length * 0.95)] ?? 0;
+
     const annotations = [
         { xref:'paper', yref:'paper', x:0.02, y:0.12, xanchor:'left',
           text:`<b>VLF</b> ${result.vlfPct.toFixed(1)}%`, showarrow:false,
@@ -2531,8 +2536,9 @@ function updateSpectrogramChart() {
     ];
 
     Plotly.update('psdChart',
-        { x: [dispTimes], y: [result.freqs], z: [Z] },
+        { x: [dispTimes], y: [result.freqs], z: [Z], zmin: [zmin], zmax: [zmax] },
         { annotations },
+        { colorscale: [['Plasma']], reversescale: [[false]] },
         [0]
     );
 }
@@ -3500,11 +3506,8 @@ Plotly.newPlot('poincareChart', [
 Plotly.newPlot('psdChart', [{
     type: 'heatmap',
     x: [], y: [], z: [[]],
-    colorscale: [
-      ['0', 'rgb(224,243,248)'],
-      ['0.5', 'rgb(116,173,209)'],
-      ['1', 'rgb(49,54,149)']
-    ],
+    colorscale: 'Plasma',
+    reversescale: false,
     showscale: false,
     zsmooth: 'best',
     hovertemplate: 'Time: %{x:.1f}s<br>Freq: %{y:.3f} Hz<br>Log Power: %{z:.2f}<extra></extra>'
