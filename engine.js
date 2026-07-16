@@ -32,7 +32,9 @@ let chartUpdateThrottle = {
     hr: 0,
     vagalProxy: 0
 };
-const CHART_UPDATE_INTERVAL = 100; // ms
+const CHART_UPDATE_INTERVAL = 100; // ms (default)
+// Per-chart refresh budget: BLE delivers ~1 packet/s, slow-moving charts need far fewer redraws
+const CHART_INTERVALS = { rr: 750, rmssd: 750, hr: 750, poincare: 3000, vagalProxy: 3000, psd: 100 /* CWT has its own 2 s gate */ };
 
 // ── App Settings ──────────────────────────────────────────────────
 const DEFAULT_SETTINGS = {
@@ -44,20 +46,31 @@ const DEFAULT_SETTINGS = {
     visibleCharts: {
         ecg: true, rr: true, rollingRMSSD: true,
         poincare: true, psd: true, hr: true, vagalProxy: true
-    }
+    },
+    showSRI: true,
+    exportLight: true,                       // white background on single-plot PNG/SVG downloads
+    appearance: { accent: 'indigo', density: 'comfortable', radius: 20, effects: true, motion: true },
+    chartPrefs: {},                          // per-plot customisation, keyed by chart key (see CHART_META)
+    report: { sections: {}, scale: 4 }       // section switches (missing key = on) and plot resolution
 };
 let appSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+
+// Merge a (possibly partial / older) saved object over the defaults, one level deep
+function mergeSettings(p) {
+    p = p || {};
+    return {
+        ...DEFAULT_SETTINGS, ...p,
+        visibleCharts: { ...DEFAULT_SETTINGS.visibleCharts, ...(p.visibleCharts || {}) },
+        appearance:    { ...DEFAULT_SETTINGS.appearance,    ...(p.appearance    || {}) },
+        chartPrefs:    { ...(p.chartPrefs || {}) },
+        report:        { scale: 4, ...(p.report || {}), sections: { ...((p.report && p.report.sections) || {}) } }
+    };
+}
 
 function loadSettings() {
     try {
         const saved = localStorage.getItem('cardioTraceSettings');
-        if (saved) {
-            const p = JSON.parse(saved);
-            appSettings = {
-                ...DEFAULT_SETTINGS, ...p,
-                visibleCharts: { ...DEFAULT_SETTINGS.visibleCharts, ...(p.visibleCharts || {}) }
-            };
-        }
+        if (saved) appSettings = mergeSettings(JSON.parse(saved));
     } catch(e) { /* use defaults */ }
 }
 
@@ -117,6 +130,8 @@ function applySettings() {
         if (cb) cb.checked = appSettings.visibleCharts[key] !== false;
     });
     applyChartVisibility();
+    applyAppearance();
+    syncCustomControls();
 }
 
 // ── GridStack ─────────────────────────────────────────────────────
@@ -133,6 +148,53 @@ const DEFAULT_GRID_LAYOUT = [
     { id: 'vagalProxy',   x: 6,  y: 15, w: 6,  h: 5 },
 ];
 
+// Row height follows the container width: 4K / 32:9 get taller rows, phones get compact ones
+let _lastCellH = 0;
+function applyResponsiveGrid() {
+    if (!grid) return;
+    const w = document.getElementById('chartsGrid').clientWidth;
+    if (!w) return;                                  // hidden tab: measure later
+    const narrow = w < 768;                          // GridStack 8 collapses to 1 column below this
+    const k = appSettings.appearance && appSettings.appearance.density === 'compact' ? 0.85 : 1;
+    const h = Math.round(k * (narrow
+        ? Math.min(90, Math.max(56, w * 0.2))
+        : Math.min(150, Math.max(56, (w / 12) * 0.5))));
+    if (h !== _lastCellH) { _lastCellH = h; grid.cellHeight(h); }
+    grid.enableMove(!narrow);                        // no accidental drags while scrolling on phones
+    grid.enableResize(!narrow);
+}
+
+// Axis titles / margins / fonts adapt to the real width of each chart
+const AXIS_TITLES = {
+    ecgChart: ['Time (s)', 'Amplitude (µV)'],      rrChart: ['Time (s)', 'RR Interval (ms)'],
+    rollingRMSSDChart: ['Time (s)', 'RMSSD (ms)'], poincareChart: ['RR(n) (ms)', 'RR(n+1) (ms)'],
+    psdChart: ['Time (s)', 'Frequency (Hz)'],      hrChart: ['Time (s)', 'Heart Rate (bpm)'],
+    vagalProxyChart: ['Time (s)', 'RMSSD / SDNN']
+};
+const _density = {};
+function applyChartDensity() {
+    ALL_CHART_IDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el || !el.clientWidth || !el.data) return;   // hidden or not yet plotted
+        const w = el.clientWidth;
+        const d = w < 300 ? 'tiny' : w < 480 ? 'small' : w >= 900 ? 'wide' : 'normal';
+        if (_density[id] === d) return;                   // relayout only when the class changes
+        _density[id] = d;
+        const full = d === 'normal' || d === 'wide';
+        const [xt, yt] = AXIS_TITLES[id];
+        Plotly.relayout(id, {
+            'xaxis.title.text': full ? xt : '',
+            'yaxis.title.text': full ? yt : '',
+            'xaxis.automargin': true,
+            'yaxis.automargin': true,
+            'margin.l': d === 'tiny' ? 30 : d === 'small' ? 40 : 55,
+            'margin.r': d === 'tiny' ? 8 : 20,
+            'margin.b': full ? 40 : 28,
+            'font.size': d === 'tiny' ? 9 : d === 'small' ? 11 : d === 'wide' ? 13 : 12
+        });
+    });
+}
+
 function resizeAllCharts() {
     ALL_CHART_IDS.forEach(id => {
         try { Plotly.Plots.resize(document.getElementById(id)); } catch(e) {}
@@ -140,7 +202,7 @@ function resizeAllCharts() {
 }
 
 function saveGridLayout() {
-    if (grid) {
+    if (grid && grid.getColumn() === 12) {   // never persist the 1-column (mobile) arrangement
         try { localStorage.setItem('cardioTraceGridLayout', JSON.stringify(grid.save(false))); } catch(e) {}
     }
 }
@@ -178,16 +240,34 @@ function initGrid() {
         setTimeout(resizeAllCharts, 120);
     });
 
+    applyResponsiveGrid();
+    applyChartDensity();
     setTimeout(resizeAllCharts, 150);
+
+    // One observer instead of relying on window 'resize': also catches orientation changes,
+    // split-screen, DevTools docking and monitor changes.
+    let raf = 0;
+    new ResizeObserver(() => {
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => {
+            applyResponsiveGrid();
+            resizeAllCharts();
+            applyChartDensity();
+        });
+    }).observe(document.getElementById('chartsGrid'));
 }
 let isConnected = false;
-let ecgSupported = false;
 let sessionStartTime = Date.now();
 let calibrationStartTime = null;
 let timerInterval = null;
 let autoSaveInterval = null;
 let currentSessionId = null;
 let lastCWTResult = null; // Store last CWT calculation for band power reuse
+let calibrationTimeout = null; // handle for the calibration setTimeout (cancel on reset/disconnect)
+let ecgClockT = null;          // continuous ECG sample clock (s, same reference as RR timestamps)
+let signalTimer = null;
+let wakeLock = null;
+const ECG_FS = 130;
 let dataQuality = 100;
 let selectedEventType = 'Note';
 let currentHR = 0;
@@ -210,7 +290,6 @@ let focusMode       = false;
 let biofeedbackMode = false;
 let biofeedbackTimer = null;
 let breathePhase    = 'inhale'; // 'inhale' | 'exhale'
-let breatheCount    = 0;
 let monitorChannel  = null;
 let monitorWin      = null;
 let exportSelectedIds = new Set();
@@ -277,6 +356,15 @@ function switchTab(tabId) {
     if (tabId === 'subjects') renderSubjects();
     if (tabId === 'analyze')  renderAnalyzeTab();
     if (tabId === 'export')   renderExportTab();
+    if (tabId === 'record') {
+        // Plotly cannot measure display:none containers — resize + catch-up once visible again
+        requestAnimationFrame(() => {
+            applyResponsiveGrid();
+            resizeAllCharts();
+            applyChartDensity();
+            refreshAllCharts();
+        });
+    }
 }
 const bulkDownloadBtn = document.getElementById('bulkDownloadBtn');
 const bulkFormatSelect = document.getElementById('bulkFormatSelect');
@@ -285,7 +373,6 @@ const bulkFormatSelect = document.getElementById('bulkFormatSelect');
 const eventTypePanel = document.getElementById('eventTypePanel');
 const eventTypeOverlay = document.getElementById('eventTypeOverlay');
 const eventTypeClose = document.getElementById('eventTypeClose');
-const eventTypeSelector = document.getElementById('eventTypeSelector');
 const eventAnnotation = document.getElementById('eventAnnotation');
 const addEventBtn = document.getElementById('addEventBtn');
 const annotationsList = document.getElementById('annotationsList');
@@ -376,21 +463,30 @@ async function initDB() {
     });
 }
 
-// Theme toggle
-function toggleTheme() {
-    const currentTheme = document.documentElement.getAttribute('data-theme');
-    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
-    document.documentElement.setAttribute('data-theme', newTheme === 'dark' ? null : 'light');
-    localStorage.setItem('theme', newTheme);
-    updateChartThemes();
+// Theme: 'dark' | 'light' | 'auto' (follows the OS). Stored under localStorage 'theme'.
+function getThemeMode() { return localStorage.getItem('theme') || 'dark'; }
+function applyThemeMode(mode) {
+    const eff = mode === 'auto'
+        ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+        : mode;
+    if (eff === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
 }
-
-// Load saved theme
+function setThemeMode(mode) {
+    localStorage.setItem('theme', mode);
+    applyThemeMode(mode);
+    updateChartThemes();
+    syncCustomControls();
+}
+function toggleTheme() {
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    setThemeMode(isLight ? 'dark' : 'light');
+}
 function loadTheme() {
-    const savedTheme = localStorage.getItem('theme') || 'dark';
-    if (savedTheme === 'light') {
-        document.documentElement.setAttribute('data-theme', 'light');
-    }
+    applyThemeMode(getThemeMode());
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+        if (getThemeMode() === 'auto') { applyThemeMode('auto'); updateChartThemes(); }
+    });
 }
 
 // ── Subject helpers ───────────────────────────────────────
@@ -643,7 +739,7 @@ async function renderSubjects() {
                         <div class="session-stat-label">Sessions</div>
                         <div class="session-stat-value">${ss.length}</div>
                     </div>
-                    <div class="session-stat">
+                    <div class="session-stat sri-el">
                         <div class="session-stat-label">Avg SRI</div>
                         <div class="session-stat-value ${sriCls}">${avgSRI > 0 ? avgSRI : '--'}</div>
                     </div>
@@ -676,6 +772,7 @@ function updateModesAvailability() {
     const bar = document.getElementById('recordModeBar');
     if (!bar) return;
     const recording = isConnected && !!calibrationStartTime && !isCalibrating;
+    updateProtocolControls();
     bar.style.display = recording ? '' : 'none';
     if (!recording) {
         exitFocusMode();
@@ -731,11 +828,9 @@ function toggleBiofeedbackMode() {
 function startBreathingCue() {
     stopBreathingCue();
     breathePhase = 'inhale';
-    breatheCount = 0;
     renderBreatheCue();
     biofeedbackTimer = setInterval(() => {
         breathePhase = breathePhase === 'inhale' ? 'exhale' : 'inhale';
-        if (breathePhase === 'inhale') breatheCount++;
         renderBreatheCue();
     }, 5000);
 }
@@ -770,11 +865,14 @@ function updateBiofeedbackDisplay() {
     if (hrEl)    hrEl.textContent    = currentHR > 0 ? currentHR : '--';
     if (rmssdEl) rmssdEl.textContent = parseFloat(rmssdValue.textContent) > 0
         ? parseFloat(rmssdValue.textContent).toFixed(1) : '--';
-    if (sriEl)   sriEl.textContent   = sriScore > 0 ? sriScore : '--';
+    const sriOn = appSettings.showSRI !== false;
+    const lblEl = document.querySelector('.biofeedback-sri-label');
+    if (lblEl) lblEl.textContent = sriOn ? 'SRI' : 'RMSSD';
+    if (sriEl)   sriEl.textContent   = sriOn ? (sriScore > 0 ? sriScore : '--') : (rmssdEl ? rmssdEl.textContent : '--');
     if (zoneEl)  zoneEl.textContent  = hrZoneText.textContent || '—';
 
     // Tint ring and SRI score based on current SRI
-    if (sriScore > 0 && ringEl) {
+    if (sriOn && sriScore > 0 && ringEl) {
         const c = sriScore >= 75 ? '#10b981'
                 : sriScore >= 55 ? '#22d3ee'
                 : sriScore >= 35 ? '#f59e0b'
@@ -823,7 +921,8 @@ function broadcastMonitorUpdate() {
         zone:        hrZoneText.textContent || '',
         subjectName: currentSubjectName,
         isConnected,
-        isCalibrating
+        isCalibrating,
+        showSRI: appSettings.showSRI !== false
     });
 }
 
@@ -910,6 +1009,7 @@ bc.onmessage=(e)=>{
   document.getElementById('rmssdEl').textContent=d.rmssd>0?d.rmssd.toFixed(1):'--';
   const ze=document.getElementById('zoneEl');
   if(d.zone){ze.textContent=d.zone;ze.style.display='';}
+  const sb=document.querySelector('.sri-block'); if(sb) sb.style.display=d.showSRI===false?'none':'';
   const score=d.sri||0;
   const cls=getSRIClass(score);
   const sriEl=document.getElementById('sriEl');
@@ -1047,7 +1147,7 @@ async function renderExportTab() {
             <td>${formatDuration(s.duration)}</td>
             <td class="export-col-num">${s.stats?.samples || s.rrIntervals?.length || '—'}</td>
             <td class="export-col-num">${s.stats?.rmssd ? s.stats.rmssd.toFixed(1) : '—'}</td>
-            <td class="export-col-num ${sriClass}" style="font-weight:700;">${s.sri > 0 ? s.sri : '—'}</td>
+            <td class="export-col-num sri-el ${sriClass}" style="font-weight:700;">${s.sri > 0 ? s.sri : '—'}</td>
             <td>${tags || '<span style="color:var(--text-tertiary)">—</span>'}</td>
         </tr>`;
     }).join('');
@@ -1063,7 +1163,7 @@ async function renderExportTab() {
                 <th>Duration</th>
                 <th>Samples</th>
                 <th>RMSSD</th>
-                <th>SRI</th>
+                <th class="sri-el">SRI</th>
                 <th>Tags</th>
             </tr>
         </thead>
@@ -1218,7 +1318,8 @@ async function exportSelectedZip() {
                     filename: s.filename, startTime: s.startTime,
                     tags: s.tags || [], rrCount: s.rrIntervals.length,
                     rawRRCount: s.rawRRIntervals?.length || s.rrIntervals.length,
-                    eventCount: s.eventMarkers?.length || 0, includeRaw: false
+                    eventCount: s.eventMarkers?.length || 0, includeRaw: false,
+                    sessionTimestamps: s.timestamps, sessionEventMarkers: s.eventMarkers || []
                 });
                 csv += 'Timestamp (s),RR Interval (ms),Event Type,Annotation\n';
                 for (let i = 0; i < s.rrIntervals.length; i++) {
@@ -1595,7 +1696,6 @@ async function renderSummaryView() {
     }
 
     const subjects = await loadSubjects();
-    const subjectNameMap = Object.fromEntries(subjects.map(s => [s.id, s.name]));
 
     // Build row groups: All Sessions + one per subject key
     const byKey = {};
@@ -1637,7 +1737,7 @@ async function renderSummaryView() {
             <tr>
                 <th>Subject / Group</th>
                 <th>Sessions</th>
-                <th>Avg SRI</th>
+                <th class="sri-el">Avg SRI</th>
                 <th>Avg RMSSD</th>
                 <th>Avg HR</th>
                 <th>Avg Duration</th>
@@ -1659,7 +1759,7 @@ async function renderSummaryView() {
                     <span class="summary-avatar">${g.initial}</span>${g.label}
                 </td>
                 <td><span class="summary-val">${g.ss.length}</span></td>
-                <td class="${sriClass}">${cell(sriSt,'',0)}</td>
+                <td class="sri-el ${sriClass}">${cell(sriSt,'',0)}</td>
                 <td>${cell(rmssdSt,' ms')}</td>
                 <td>${cell(hrSt,' bpm',0)}</td>
                 <td><span class="summary-val">${formatDuration(avgDur(g.ss))}</span></td>
@@ -1745,6 +1845,7 @@ function updateProtocolChipDisplay() {
         nameEl.textContent = 'Free Recording';
         if (durEl) durEl.textContent = '';
     }
+    updateProtocolControls();
 }
 
 // ── Protocol picker ───────────────────────────────────────
@@ -1780,7 +1881,7 @@ async function renderProtocolPickerList() {
             <div class="protocol-option-actions">
                 <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px;min-height:28px;"
                         onclick="selectBuiltinProtocol(${i})">
-                    ${isSel ? '✓ Selected' : 'Select'}
+                    ${isRecordingLive() ? (isSel && protocolRunning ? '▶ Restart' : '▶ Start now') : (isSel ? '✓ Selected' : 'Select')}
                 </button>
             </div>
         </div>`;
@@ -1805,31 +1906,41 @@ async function renderProtocolPickerList() {
                 <button class="session-action-btn delete" onclick="confirmDeleteProtocol(${p.id})" title="Delete">🗑️</button>
                 <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px;min-height:28px;"
                         onclick="selectUserProtocol(${p.id})">
-                    ${isSel ? '✓ Selected' : 'Select'}
+                    ${isRecordingLive() ? (isSel && protocolRunning ? '▶ Restart' : '▶ Start now') : (isSel ? '✓ Selected' : 'Select')}
                 </button>
             </div>
         </div>`;
     }).join('');
 }
 
-function selectBuiltinProtocol(idx) {
-    activeProtocol = { ...BUILTIN_PROTOCOLS[idx] };
-    updateProtocolChipDisplay();
-    closeProtocolPicker();
-}
+// A protocol can be activated at ANY time: while recording it starts immediately
+// (switching away from a running one); before/while calibrating it starts automatically
+// when calibration ends (existing behaviour in connect()).
+function isRecordingLive() { return isConnected && !isCalibrating && !!calibrationStartTime; }
 
-async function selectUserProtocol(id) {
-    const p = await loadProtocol(id);
-    if (!p) return;
+function chooseProtocol(p) {
+    if (protocolRunning && !confirm('A protocol is already running. Replace it?')) return;
+    if (protocolRunning) { addEventMarkerProgrammatic('Protocol switched'); stopProtocolRunner(); }
     activeProtocol = p;
     updateProtocolChipDisplay();
     closeProtocolPicker();
+    if (p && isRecordingLive()) startProtocolRunner();
 }
 
-function selectFreeRecording() {
-    activeProtocol = null;
-    updateProtocolChipDisplay();
-    closeProtocolPicker();
+function selectBuiltinProtocol(idx) { chooseProtocol({ ...BUILTIN_PROTOCOLS[idx] }); }
+
+async function selectUserProtocol(id) {
+    const p = await loadProtocol(id);
+    if (p) chooseProtocol(p);
+}
+
+function selectFreeRecording() { chooseProtocol(null); }
+
+// "▶ Start" next to the protocol chip: visible while recording with a protocol that is not running
+function updateProtocolControls() {
+    const btn = document.getElementById('startProtocolBtn');
+    if (!btn) return;
+    btn.style.display = (activeProtocol && isRecordingLive() && !protocolRunning) ? '' : 'none';
 }
 
 async function confirmDeleteProtocol(id) {
@@ -1994,6 +2105,7 @@ function startProtocolRunner() {
 
     addEventMarkerProgrammatic(`Start: ${activeProtocol.phases[0].name}`);
     updateProtocolRunnerUI();
+    updateProtocolControls();
 
     if (phaseTimer) clearInterval(phaseTimer);
     phaseTimer = setInterval(() => {
@@ -2012,6 +2124,7 @@ function stopProtocolRunner() {
     currentPhaseIdx  = 0;
     phaseSecondsLeft = 0;
     document.getElementById('protocolRunnerPanel').style.display = 'none';
+    updateProtocolControls();
 }
 
 function skipProtocolPhase() {
@@ -2094,6 +2207,7 @@ function updateChartThemes() {
     });
     // Re-render charts that have theme-sensitive annotations
     if (rrIntervals.length > 1) updatePoincareChart();
+    if (typeof applyAllChartPrefs === 'function') applyAllChartPrefs();   // theme reset grid/axis colours
 }
 
 // Calculate HR zones
@@ -2140,12 +2254,27 @@ function updateSignalQuality() {
     signalText.textContent = qualityNames[quality];
 }
 
-// Monitor signal quality
-setInterval(() => {
-    if (isConnected) {
-        updateSignalQuality();
-    }
-}, 1000);
+// Monitor signal quality (runs only while a device is connected)
+function startSignalMonitor() {
+    if (!signalTimer) signalTimer = setInterval(updateSignalQuality, 1000);
+}
+function stopSignalMonitor() {
+    clearInterval(signalTimer);
+    signalTimer = null;
+}
+
+// Keep the screen awake while recording (long sessions on phones/tablets)
+async function acquireWakeLock() {
+    try {
+        if ('wakeLock' in navigator && !wakeLock) {
+            wakeLock = await navigator.wakeLock.request('screen');
+            wakeLock.addEventListener('release', () => { wakeLock = null; });
+        }
+    } catch (e) { /* denied or unsupported: non-fatal */ }
+}
+function releaseWakeLock() {
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
 
 // Calculate PSD using Lomb-Scargle periodogram
 function calculatePSD(rrIntervals, timestamps) {
@@ -2220,6 +2349,10 @@ function calculateDataQuality(originalLength, cleanedLength) {
 function lombScarglePeriodogram(times, values, frequencies) {
     const n = times.length;
     if (n < 2 || frequencies.length < 2) return frequencies.map(() => 0);
+
+    // Shift to t0 = 0: sin/cos of 2*pi*f*t lose precision when t is a large absolute time
+    const t0 = times[0];
+    times = Array.from(times, v => v - t0);
 
     // --- 1) Demean values
 
@@ -2406,13 +2539,14 @@ function computeMorletCWT(rrMs) {
     const avgPow    = new Float64Array(CWT_VOICES);
     const TWOPI     = 2 * Math.PI;
     const dt        = 1 / CWT_FS;
+    const wRe = new Float64Array(NFFT), cRe = new Float64Array(NFFT), cIm = new Float64Array(NFFT);   // reused per voice
 
     for (let vi = 0; vi < CWT_VOICES; vi++) {
         const f        = freqs[vi];
         const sSeconds = CWT_OMEGA0 / (TWOPI * f);       // scale in seconds
         // Morlet wavelet spectrum (normalised, one-sided)
         const norm = Math.sqrt(TWOPI * sSeconds / dt) * Math.pow(Math.PI, -0.25);
-        const wRe  = new Float64Array(NFFT);
+        wRe.fill(0);
 
         for (let k = 0; k < NFFT; k++) {
             const fk = (k <= NFFT >> 1 ? k : k - NFFT) * CWT_FS / NFFT;
@@ -2422,8 +2556,6 @@ function computeMorletCWT(rrMs) {
         }
 
         // Multiply in frequency domain (wavelet spectrum is real)
-        const cRe = new Float64Array(NFFT);
-        const cIm = new Float64Array(NFFT);
         for (let k = 0; k < NFFT; k++) {
             cRe[k] = xRe[k] * wRe[k];
             cIm[k] = xIm[k] * wRe[k];
@@ -2538,7 +2670,6 @@ function updateSpectrogramChart() {
     Plotly.update('psdChart',
         { x: [dispTimes], y: [result.freqs], z: [Z], zmin: [zmin], zmax: [zmax] },
         { annotations },
-        { colorscale: [['Plasma']], reversescale: [[false]] },
         [0]
     );
 }
@@ -2774,32 +2905,19 @@ function formatDate(dateString) {
 
 // Auto-save session
 let _autoSaveInProgress = false;
+let _autoSaveDone = null;      // resolves when the in-flight auto-save finishes
+let _lastAutoSaveId = null;    // id created by the latest auto-save (used by the final save at disconnect)
 async function autoSaveSession() {
     if (!isConnected || rrIntervals.length === 0 || _autoSaveInProgress) return;
     _autoSaveInProgress = true;
+    let _finishAutoSave;
+    _autoSaveDone = new Promise(r => { _finishAutoSave = r; });
 
     try {
-        const currentTime = calibrationStartTime
-            ? (Date.now() - calibrationStartTime) / 1000
-            : 0;
-        const oneMinAgo = currentTime - 60;
-        const recentRR = rrIntervals.filter((_, i) => timestamps[i] >= oneMinAgo);
-
-        let avgRR = null, rmssd = null;
-        if (recentRR.length > 0) {
-            avgRR = recentRR.reduce((a, b) => a + b, 0) / recentRR.length;
-        }
-        if (recentRR.length > 1) {
-            let sumSquaredDiff = 0;
-            for (let i = 1; i < recentRR.length; i++) {
-                const diff = recentRR[i] - recentRR[i - 1];
-                sumSquaredDiff += diff * diff;
-            }
-            rmssd = Math.sqrt(sumSquaredDiff / (recentRR.length - 1));
-        }
+        const { avgRR, rmssd } = recentWindowStats(sessionNowSeconds());
 
         const sessionId = await saveSession({
-            startTime: sessionStartTime,
+            startTime: calibrationStartTime || sessionStartTime,
             filename: document.getElementById('filename').value || 'polar-h10-data',
             rrIntervals: [...rrIntervals],
             timestamps: [...timestamps],
@@ -2819,6 +2937,7 @@ async function autoSaveSession() {
             protocolName: activeProtocol?.name ?? null
         }, currentSessionId);
 
+        _lastAutoSaveId = sessionId;
         if (!currentSessionId) {
             currentSessionId = sessionId;
             console.log('✓ Session auto-saved (ID: ' + sessionId + ')');
@@ -2831,6 +2950,7 @@ async function autoSaveSession() {
         console.error('Auto-save failed:', error);
     } finally {
         _autoSaveInProgress = false;
+        _finishAutoSave();
     }
 }
 
@@ -2850,6 +2970,11 @@ function stopAutoSave() {
     }
 }
 
+// Escape user-provided text (tags, names) before it is placed in innerHTML / attributes
+function escapeHTML(v) {
+    return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 // Update history badge
 async function updateHistoryBadge() {
     try {
@@ -2862,19 +2987,24 @@ async function updateHistoryBadge() {
             if (s.tags) s.tags.forEach(tag => allTags.add(tag));
         });
 
+        // This runs after every auto-save: keep whatever filter the user has chosen
+        const prevTag = tagFilter.value;
         const tagOptions = '<option value="">All Tags</option>' +
             Array.from(allTags).sort().map(tag =>
-                `<option value="${tag}">${tag}</option>`
+                `<option value="${escapeHTML(tag)}">${escapeHTML(tag)}</option>`
             ).join('');
         tagFilter.innerHTML = tagOptions;
+        if (prevTag && allTags.has(prevTag)) tagFilter.value = prevTag;
 
         const subjectFilterEl = document.getElementById('subjectFilter');
         if (subjectFilterEl) {
             const subjects = await loadSubjects();
+            const prevSubject = subjectFilterEl.value;
             subjectFilterEl.innerHTML = '<option value="">All Subjects</option>' +
                 '<option value="anonymous">Anonymous</option>' +
                 subjects.sort((a,b) => a.name.localeCompare(b.name))
-                    .map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+                    .map(s => `<option value="${s.id}">${escapeHTML(s.name)}</option>`).join('');
+            if (prevSubject) subjectFilterEl.value = prevSubject;
         }
     } catch (error) {
         console.error('Failed to update history badge:', error);
@@ -2968,7 +3098,7 @@ async function renderHistory() {
                             <span class="session-stat-unit">ms</span>
                         </div>
                     </div>
-                    <div class="session-stat">
+                    <div class="session-stat sri-el">
                         <div class="session-stat-label">SRI</div>
                         <div class="session-stat-value ${session.sri >= 75 ? 'sri-excellent' : session.sri >= 55 ? 'sri-good' : session.sri >= 35 ? 'sri-fair' : session.sri > 0 ? 'sri-poor' : ''}">
                             ${session.sri !== null && session.sri !== undefined && session.sri > 0 ? session.sri : '--'}
@@ -3046,7 +3176,7 @@ async function renderHistoryTable() {
                 <td>${session.stats.samples}</td>
                 <td>${session.stats.avgRR ? session.stats.avgRR.toFixed(1) + ' ms' : '—'}</td>
                 <td>${session.stats.rmssd ? session.stats.rmssd.toFixed(1) + ' ms' : '—'}</td>
-                <td class="${sriClass}" style="font-weight:700;">${session.sri > 0 ? session.sri : '—'}</td>
+                <td class="sri-el ${sriClass}" style="font-weight:700;">${session.sri > 0 ? session.sri : '—'}</td>
                 <td>${session.eventMarkers?.length || 0}</td>
                 <td>${tagsHtml}</td>
                 <td class="table-actions">
@@ -3121,13 +3251,17 @@ async function restoreSession(id) {
             timestamps = cleaned.times;
         }
 
+        lastCWTResult = null;                 // never reuse another session's CWT for LF/HF
+        _cwtLastUpdate = 0;                   // and let the spectrogram redraw immediately
+        switchTab('record');                  // show the Record tab BEFORE drawing into its charts
+
         eventMarkers = [...session.eventMarkers];
         sessionAnnotations = session.annotations || [];
         sessionTags = session.tags || [];
         sessionStartTime = session.startTime || session.timestamp;
 
         // Calculate or restore SRI using the SAME function
-        const sriResult = calculateSRI(rrIntervals, timestamps);
+        const sriResult = appSettings.showSRI === false ? null : calculateSRI(rrIntervals, timestamps);
         if (sriResult) {
             sriScore = sriResult.score;
             sriComponents = sriResult.components;
@@ -3166,8 +3300,6 @@ async function restoreSession(id) {
         renderAnnotations();
         renderTags();
 
-        // Dismiss whichever history UI is currently open
-        switchTab('record');
         await updateHistoryBadge();
 
         console.log(`✓ Session restored: ${session.stats.samples} samples, SRI: ${sriScore}`);
@@ -3251,6 +3383,7 @@ async function bulkDownloadSessions(filterOverrides = {}) {
                     rrCount: session.rrIntervals.length,
                     rawRRCount: session.rawRRIntervals?.length || session.rrIntervals.length,
                     eventCount: session.eventMarkers?.length || 0,
+                    sessionTimestamps: session.timestamps, sessionEventMarkers: session.eventMarkers || [],
                     includeRaw: false
                 });
                 csv += 'Timestamp (s),RR Interval (ms),Event Type,Annotation\n';
@@ -3283,15 +3416,6 @@ async function bulkDownloadSessions(filterOverrides = {}) {
         bulkDownloadBtn.disabled = false;
         bulkDownloadBtn.textContent = '⬇ Download';
     }
-}
-
-// History panel controls
-function openHistory() {
-    switchTab('history');
-}
-
-function closeHistory() {
-    switchTab('record');
 }
 
 // Event type panel controls
@@ -3383,8 +3507,8 @@ function renderTags() {
 
     currentTags.innerHTML = sessionTags.map(tag => `
         <div class="tag-chip">
-            ${tag}
-            <span class="tag-chip-remove" data-tag="${tag}">✕</span>
+            ${escapeHTML(tag)}
+            <span class="tag-chip-remove" data-tag="${escapeHTML(tag)}">✕</span>
         </div>
     `).join('');
 
@@ -3488,7 +3612,7 @@ Plotly.newPlot('rollingRMSSDChart', [{
 
 Plotly.newPlot('poincareChart', [
     {
-        x: [], y: [], type: 'scatter', mode: 'markers', name: 'RR Points',
+        x: [], y: [], type: 'scattergl', mode: 'markers', name: 'RR Points',   // WebGL: ~10x cheaper than 1 SVG node per beat
         marker: { color: '#a78bfa', size: 5, opacity: 0.55 },
         hovertemplate: 'RR(n): %{x:.2f}ms<br>RR(n+1): %{y:.2f}ms<extra></extra>'
     },
@@ -3534,7 +3658,7 @@ Plotly.newPlot('vagalProxyChart', [{
 
 // Event listeners
 connectBtn.addEventListener('click', connect);
-disconnectBtn.addEventListener('click', disconnect);
+disconnectBtn.addEventListener('click', () => disconnect());
 resetBtn.addEventListener('click', resetSession);
 exportBtn.addEventListener('click', exportData);
 copyBtn.addEventListener('click', copyToClipboard);
@@ -3552,6 +3676,7 @@ bulkDownloadBtn.addEventListener('click', bulkDownloadSessions);
 
 // Protocol management
 document.getElementById('changeProtocolBtn').addEventListener('click', openProtocolPicker);
+document.getElementById('startProtocolBtn').addEventListener('click', () => { if (activeProtocol && isRecordingLive()) startProtocolRunner(); });
 document.getElementById('protocolPickerClose').addEventListener('click', closeProtocolPicker);
 document.getElementById('protocolPickerOverlay').addEventListener('click', closeProtocolPicker);
 document.getElementById('freeRecordingBtn').addEventListener('click', selectFreeRecording);
@@ -3796,9 +3921,18 @@ async function performSessionReset(showConfirm = true) {
     // Reset session variables
     sessionStartTime = Date.now();
     currentSessionId = null;
-    calibrationStartTime = Date.now();
-    calibrationEndTime = null;
-    isCalibrating = false;
+    if (!isConnected) {
+        // Nothing is streaming: no baseline until the next connect() finishes calibrating
+        calibrationStartTime = null;
+        calibrationEndTime = null;
+        isCalibrating = false;
+    } else if (!isCalibrating) {
+        calibrationStartTime = Date.now();   // live session: restart the time axis now
+    }                                        // still calibrating: leave calibration untouched
+    lastCWTResult = null;
+    _cwtLastUpdate = 0;
+    ecgClockT = null;
+    _lastAutoSaveId = null;
 
     // Reset UI
     hrValue.textContent = '--';
@@ -3857,6 +3991,9 @@ async function connect() {
             optionalServices: [PMD_SERVICE, BATTERY_SERVICE]
         });
 
+        device.removeEventListener('gattserverdisconnected', onGattDisconnected);
+        device.addEventListener('gattserverdisconnected', onGattDisconnected);
+
         // Only now ask to clear and reset
         if (rrIntervals.length > 0) {
             if (!confirm('Starting a new session will clear current data. Continue?')) {
@@ -3901,7 +4038,6 @@ async function connect() {
                 try {
                     const startECG = new Uint8Array([0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00]);
                     await pmdControlChar.writeValue(startECG);
-                    ecgSupported = true;
                 } catch (err) {
                     console.log('ECG streaming not available');
                 }
@@ -3924,7 +4060,8 @@ async function connect() {
         status.classList.add('calibrating');
 
         // Update status after calibration
-        setTimeout(() => {
+        clearTimeout(calibrationTimeout);
+        calibrationTimeout = setTimeout(() => {
             if (isConnected) {
                 isCalibrating = false;
                 calibrationStartTime = Date.now(); // Set the baseline for all timestamps
@@ -3939,6 +4076,8 @@ async function connect() {
         }, (appSettings.calibrationSecs || 8) * 1000);
 
         startRecordingTimer();
+        startSignalMonitor();
+        acquireWakeLock();
         startAutoSave();
 
         connectBtn.disabled = true;
@@ -3954,35 +4093,32 @@ async function connect() {
     }
 }
 
+// Fired by the browser when the GATT link drops (out of range, strap removed, battery)
+function onGattDisconnected() {
+    if (!isConnected) return;            // user-initiated: disconnect() already cleaned up
+    disconnect(true);                    // saves the session and resets the UI
+    status.textContent = 'Connection lost — session saved';
+}
+
 // Disconnect
 function disconnect(skipConfirm = false) {
     if (skipConfirm || confirm('Disconnect device? Data will be saved to history.')) {
         stopAutoSave();
+        clearTimeout(calibrationTimeout);
+        stopSignalMonitor();
+        releaseWakeLock();
+        lastCWTResult = null; _cwtLastUpdate = 0; ecgClockT = null;
         stopProtocolRunner();
         exitFocusMode();
         exitBiofeedbackMode();
         if (monitorChannel) { broadcastMonitorUpdate(); }
         updateModesAvailability();
-        if (device && device.gatt.connected) {
+        if (device) {
             if (rrIntervals.length > 0) {
-                const currentTime = calibrationStartTime
-                    ? (Date.now() - calibrationStartTime) / 1000
-                    : 0;
-                const oneMinAgo = currentTime - 60;
-                const recentRR = rrIntervals.filter((_, i) => timestamps[i] >= oneMinAgo);
-                let avgRR = null, rmssd = null;
-                if (recentRR.length > 0) {
-                    avgRR = recentRR.reduce((a, b) => a + b, 0) / recentRR.length;
-                }
-                if (recentRR.length > 1) {
-                    let sumSquaredDiff = 0;
-                    for (let i = 1; i < recentRR.length; i++) {
-                        const diff = recentRR[i] - recentRR[i - 1];
-                        sumSquaredDiff += diff * diff;
-                    }
-                    rmssd = Math.sqrt(sumSquaredDiff / (recentRR.length - 1));
-                }
-                saveSession({
+                // final save: anchor to the last recorded beat (the link may have been down for a while)
+                const { avgRR, rmssd } = recentWindowStats(timestamps[timestamps.length - 1]);
+                const finalSid = currentSessionId;
+                const finalPayload = {
                     startTime: calibrationStartTime || sessionStartTime,
                     filename: document.getElementById('filename').value || 'polar-h10-data',
                     rrIntervals: [...rrIntervals],
@@ -4001,12 +4137,17 @@ function disconnect(skipConfirm = false) {
                     subjectName:  currentSubjectName,
                     protocolId:   activeProtocol?.id   ?? null,
                     protocolName: activeProtocol?.name ?? null
-                }, currentSessionId).then(() => {
+                };
+                // If the very first auto-save is still in flight, wait for it and update ITS record
+                // instead of creating a duplicate session.
+                const pending = _autoSaveInProgress ? _autoSaveDone : Promise.resolve();
+                pending.then(() => saveSession(finalPayload, finalSid || _lastAutoSaveId)).then(() => {
+                    _lastAutoSaveId = null;
                     console.log('✓ Session saved to history');
                     updateHistoryBadge();
                 });
             }
-            device.gatt.disconnect();
+            if (device.gatt.connected) device.gatt.disconnect();
         }
         isConnected = false;
         currentSessionId = null;
@@ -4088,6 +4229,7 @@ function resetSession() {
 
 // Recording timer
 function startRecordingTimer() {
+    if (timerInterval) clearInterval(timerInterval);
     recordingTimer.style.display = 'flex';
     timerInterval = setInterval(() => {
         // Only show time after calibration starts
@@ -4111,9 +4253,46 @@ function stopRecordingTimer() {
     recordingTimer.textContent = '⏱ 00:00';
 }
 
+// Display-only min/max decimation: keeps peaks/artifacts visible, never touches stored data.
+const MAX_DISPLAY_POINTS = 1600;
+function decimateXY(x, y, maxPts = MAX_DISPLAY_POINTS) {
+    const n = x.length;
+    if (n <= maxPts) return [x.slice(), y.slice()];   // copies: Plotly keeps references
+    const buckets = Math.floor(maxPts / 2), size = n / buckets;
+    const ox = [], oy = [];
+    for (let b = 0; b < buckets; b++) {
+        const s = Math.floor(b * size), e = Math.min(n, Math.floor((b + 1) * size));
+        if (s >= e) continue;
+        let lo = s, hi = s;
+        for (let i = s + 1; i < e; i++) { if (y[i] < y[lo]) lo = i; if (y[i] > y[hi]) hi = i; }
+        const a = Math.min(lo, hi), c = Math.max(lo, hi);
+        ox.push(x[a]); oy.push(y[a]);
+        if (c !== a) { ox.push(x[c]); oy.push(y[c]); }
+    }
+    return [ox, oy];
+}
+
+// Catch-up redraw after the Record tab / browser tab becomes visible again
+function refreshAllCharts() {
+    if (currentTab !== 'record') return;
+    if (rrIntervals.length > 0) {
+        updateRRChart(); updateRollingRMSSD(); updatePoincareChart();
+        updateHRChart(); updateVagalProxyChart();
+        _cwtLastUpdate = 0; updateSpectrogramChart();
+    }
+    updateECGChart();
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (isConnected) acquireWakeLock();      // the lock is released automatically when the tab hides
+    requestAnimationFrame(() => { resizeAllCharts(); refreshAllCharts(); });
+});
+
 function shouldUpdateChart(chartType) {
+    if (document.hidden || currentTab !== 'record') return false;   // never draw into hidden containers
     const now = Date.now();
-    if (now - chartUpdateThrottle[chartType] >= CHART_UPDATE_INTERVAL) {
+    if (now - chartUpdateThrottle[chartType] >= (CHART_INTERVALS[chartType] ?? CHART_UPDATE_INTERVAL)) {
         chartUpdateThrottle[chartType] = now;
         return true;
     }
@@ -4217,30 +4396,36 @@ function handlePMDControlResponse(event) {
 // Handle ECG data
 function handleECGData(event) {
     const value = event.target.value;
-    const timestamp = (Date.now() - sessionStartTime) / 1000;
     if (value.byteLength < 10) return;
+    // Same time reference as the RR series; negative while calibrating, so the axis is continuous
+    const nowT = (Date.now() - (calibrationStartTime ?? calibrationEndTime ?? sessionStartTime)) / 1000;
 
-    const data = new Uint8Array(value.buffer);
+    const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     const frameType = data[0];
     if (frameType !== 0x00) return;
 
     const dataStart = 10;
     const sampleCount = Math.floor((data.length - dataStart) / 3);
 
+    // Continuous 130 Hz clock: packets arrive in bursts, so arrival time is only used to (re)sync
+    const expectedStart = nowT - sampleCount / ECG_FS;
+    if (ecgClockT === null || Math.abs(ecgClockT - expectedStart) > 0.5) ecgClockT = expectedStart;
+
     for (let i = 0; i < sampleCount; i++) {
         const offset = dataStart + i * 3;
         let sample = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16);
         if (sample & 0x800000) sample |= 0xFF000000;
         ecgData.push(sample);
-        ecgTimestamps.push(timestamp + i / 130);
+        ecgTimestamps.push(ecgClockT + i / ECG_FS);
     }
+    ecgClockT += sampleCount / ECG_FS;
 
     const maxSamples = 650;
     if (ecgData.length > maxSamples) {
         ecgData = ecgData.slice(-maxSamples);
         ecgTimestamps = ecgTimestamps.slice(-maxSamples);
     }
-    updateECGChart();
+    scheduleECGRender();
 }
 
 // Calculate SRI - Uses full dataset for consistency with PSD chart
@@ -4253,7 +4438,6 @@ function calculateSRI(rrData = null, timeData = null) {
 
     // Always use full data for consistency with PSD chart (no time windowing)
     const analysisRR = rr;
-    const analysisTimes = times;
 
     // Component 1: RMSSD (35% weight)
     let rmssdValue = 0;
@@ -4271,7 +4455,7 @@ function calculateSRI(rrData = null, timeData = null) {
     const isCurrentData = !rrData && !timeData;
     let lfhfRatio = 0;
     if (isCurrentData && lastCWTResult &&
-        lastCWTResult.dataLength === rrIntervals.length) {
+        Math.abs(lastCWTResult.dataLength - rrIntervals.length) <= 5) {
         // Reuse result already computed by the spectrogram chart
         lfhfRatio = lastCWTResult.lfhfRatio;
     } else {
@@ -4352,7 +4536,7 @@ function getSRIStatus(score) {
 // Draw SRI gauge using Canvas - Enhanced futuristic design
 function drawSRIGauge(score) {
     const canvas = document.getElementById('sriGauge');
-    if (!canvas) return;
+    if (!canvas || appSettings.showSRI === false) return;
 
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
@@ -4579,6 +4763,7 @@ function initGaugeResponsiveness() {
 
 // Update SRI display
 function updateSRI() {
+    if (appSettings.showSRI === false) return;      // SRI switched off: skip the work entirely
     const result = calculateSRI(); // Always use the same function
 
     if (!result) {
@@ -4634,7 +4819,9 @@ function updateSRI() {
 }
 
 // Animate score value changes
+let _sriAnimRaf = 0;
 function animateScoreChange(from, to) {
+    cancelAnimationFrame(_sriAnimRaf);      // overlapping animations made the number flicker
     const duration = 800;
     const start = Date.now();
     const element = document.getElementById('sriValue');
@@ -4648,7 +4835,7 @@ function animateScoreChange(from, to) {
         element.textContent = current;
 
         if (progress < 1) {
-            requestAnimationFrame(animate);
+            _sriAnimRaf = requestAnimationFrame(animate);
         }
     }
 
@@ -4675,6 +4862,26 @@ sriInfoBtn.addEventListener('click', openSRIInfo);
 sriInfoClose.addEventListener('click', closeSRIInfo);
 sriInfoOverlay.addEventListener('click', closeSRIInfo);
 
+// ── Last-minute window helpers (single implementation: stats, auto-save and disconnect) ──
+// Live session time in seconds on the RR time axis; outside a live session, the last beat's time.
+function sessionNowSeconds() {
+    if (isConnected && calibrationStartTime) return (Date.now() - calibrationStartTime) / 1000;
+    return timestamps.length ? timestamps[timestamps.length - 1] : 0;
+}
+// Mean RR and RMSSD over [nowT - windowSecs, nowT]; null when the window has too little data
+function recentWindowStats(nowT, windowSecs = 60) {
+    const from = nowT - windowSecs;
+    let n = 0, sum = 0, prev = null, sq = 0, pairs = 0;
+    for (let i = 0; i < rrIntervals.length; i++) {
+        if (timestamps[i] < from) continue;
+        const v = rrIntervals[i];
+        n++; sum += v;
+        if (prev !== null) { const d = v - prev; sq += d * d; pairs++; }
+        prev = v;
+    }
+    return { avgRR: n ? sum / n : null, rmssd: pairs ? Math.sqrt(sq / pairs) : null };
+}
+
 // Update stats
 function updateStats() {
     samplesValue.textContent = rrIntervals.length;
@@ -4686,26 +4893,10 @@ function updateStats() {
         dataQuality = 100; // No raw data yet, assume 100%
     }
 
-    const currentTime = timestamps.length > 0
-        ? timestamps[timestamps.length - 1]
-        : (calibrationStartTime ? (Date.now() - calibrationStartTime) / 1000 : 0);
-    const oneMinAgo = currentTime - 60;
-    const recentRR = rrIntervals.filter((_, i) => timestamps[i] >= oneMinAgo);
-
-    if (recentRR.length > 0) {
-        const avg = recentRR.reduce((a, b) => a + b, 0) / recentRR.length;
-        avgRRValue.textContent = avg.toFixed(1);
-    }
-
-    if (recentRR.length > 1) {
-        let sumSquaredDiff = 0;
-        for (let i = 1; i < recentRR.length; i++) {
-            const diff = recentRR[i] - recentRR[i - 1];
-            sumSquaredDiff += diff * diff;
-        }
-        const rmssd = Math.sqrt(sumSquaredDiff / (recentRR.length - 1));
-        rmssdValue.textContent = rmssd.toFixed(1);
-    }
+    // 1-minute window anchored to the live clock (not the last beat): a stream gap cannot stretch it
+    const win = recentWindowStats(sessionNowSeconds());
+    if (win.avgRR !== null) avgRRValue.textContent = win.avgRR.toFixed(1);
+    if (win.rmssd !== null) rmssdValue.textContent = win.rmssd.toFixed(1);
 
     if (dataQualityValue) {
         dataQualityValue.textContent = `${dataQuality}%`;
@@ -4722,15 +4913,20 @@ function updateStats() {
 }
 
 // Update ECG chart
+let _ecgRaf = 0;
+function scheduleECGRender() {
+    if (_ecgRaf || document.hidden || currentTab !== 'record') return;
+    _ecgRaf = requestAnimationFrame(() => { _ecgRaf = 0; updateECGChart(); });
+}
+
 function updateECGChart() {
-    if (ecgData.length > 0) {
-        const paired = ecgTimestamps.map((time, index) => ({ time, value: ecgData[index] }));
-        paired.sort((a, b) => a.time - b.time);
-        Plotly.update('ecgChart', {
-            x: [paired.map(p => p.time)],
-            y: [paired.map(p => p.value)]
-        }, {}, [0]);
-    }
+    if (ecgData.length === 0) return;
+    // Timestamps are monotonic now (continuous clock) — no sort, no per-point objects.
+    // Copies: Plotly keeps references to the arrays it is given.
+    Plotly.update('ecgChart', {
+        x: [ecgTimestamps.slice()],
+        y: [ecgData.slice()]
+    }, {}, [0]);
 }
 
 // Update RR chart
@@ -4744,8 +4940,8 @@ function updateRRChart() {
 function updateRRChartWithMarkers() {
     if (timestamps.length === 0) return;
 
-    const paired = timestamps.map((time, index) => ({ time, rr: rrIntervals[index] }));
-    paired.sort((a, b) => a.time - b.time);
+    const [wx, wy] = sliceWindow('rr', timestamps, rrIntervals);   // optional per-plot time window
+    const [dx, dy] = decimateXY(wx, wy);                            // timestamps are monotonic: no sort needed
 
     const shapes = eventMarkers.map(event => ({
         type: 'line',
@@ -4766,10 +4962,7 @@ function updateRRChartWithMarkers() {
         yshift: 10
     }));
 
-    Plotly.update('rrChart', {
-        x: [paired.map(p => p.time)],
-        y: [paired.map(p => p.rr)]
-    }, { shapes, annotations }, [0]);
+    Plotly.update('rrChart', { x: [dx], y: [dy] }, { shapes, annotations }, [0]);
 }
 
 // Update rolling RMSSD
@@ -4827,8 +5020,8 @@ function updateRollingRMSSD() {
         rmssdChart.classList.remove('chart-blurred');
     }
 
-    const paired = rollingRMSSDTimes.map((time, index) => ({ time, rmssd: rollingRMSSD[index] }));
-    paired.sort((a, b) => a.time - b.time);
+    const [wx, wy] = sliceWindow('rollingRMSSD', rollingRMSSDTimes, rollingRMSSD);
+    const [dx, dy] = decimateXY(wx, wy);
 
     const shapes = eventMarkers.map(event => ({
         type: 'line',
@@ -4849,10 +5042,7 @@ function updateRollingRMSSD() {
         yshift: 10
     }));
 
-    Plotly.update('rollingRMSSDChart', {
-        x: [paired.map(p => p.time)],
-        y: [paired.map(p => p.rmssd)]
-    }, { shapes, annotations }, [0]);
+    Plotly.update('rollingRMSSDChart', { x: [dx], y: [dy] }, { shapes, annotations }, [0]);
 }
 
 // Update Poincaré chart
@@ -4869,17 +5059,20 @@ function updatePoincareChart() {
 
     if (stats && stats.sd1 > 0) {
         ellipse = generateEllipseTrace(stats.meanRR, stats.meanRR, stats.sd1, stats.sd2);
-        const allRR = [...rrN, ...rrN1];
-        const lo = Math.min(...allRR), hi = Math.max(...allRR);
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < rrIntervals.length; i++) { const v = rrIntervals[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
         identX = [lo, hi]; identY = [lo, hi];
 
         const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        const compact = document.getElementById('poincareChart').clientWidth < 340;   // tiny screens: one short line
         annotations = [{
             xref: 'paper', yref: 'paper', x: 0.98, y: 0.98,
             xanchor: 'right', yanchor: 'top',
-            text: `<b>SD1</b> ${stats.sd1} ms<br><b>SD2</b> ${stats.sd2} ms<br><b>SD1/SD2</b> ${stats.ratio}`,
+            text: compact
+                ? `<b>SD1</b> ${stats.sd1} · <b>SD2</b> ${stats.sd2}`
+                : `<b>SD1</b> ${stats.sd1} ms<br><b>SD2</b> ${stats.sd2} ms<br><b>SD1/SD2</b> ${stats.ratio}`,
             showarrow: false,
-            font: { size: 11, color: isLight ? '#4b5563' : '#9ca3af' },
+            font: { size: compact ? 9 : 11, color: isLight ? '#4b5563' : '#9ca3af' },
             bgcolor: isLight ? 'rgba(249,250,251,0.92)' : 'rgba(17,24,39,0.8)',
             bordercolor: 'rgba(99,102,241,0.3)',
             borderpad: 6, borderwidth: 1, align: 'right'
@@ -4971,7 +5164,9 @@ function updateHRChart() {
         font: { size: 10, color: 'rgba(156,163,175,0.65)' }, xanchor: 'left'
     }));
 
-    Plotly.update('hrChart', { x: [hrTimes], y: [hrValues] }, { shapes, annotations }, [0]);
+    const [wx, wy] = sliceWindow('hr', hrTimes, hrValues);
+    const [hx, hy] = decimateXY(wx, wy);
+    Plotly.update('hrChart', { x: [hx], y: [hy] }, { shapes, annotations }, [0]);
 }
 
 // ── Vagal Proxy Chart ────────────────────────────────────────────
@@ -5031,7 +5226,8 @@ function updateVagalProxyChart() {
         font: { size: 10, color: 'rgba(245,158,11,0.7)' },
         xanchor: 'right', yanchor: 'bottom'
     }];
-    Plotly.update('vagalProxyChart', { x: [times], y: [values] }, { shapes, annotations }, [0]);
+    const [vx, vy] = sliceWindow('vagalProxy', times, values);
+    Plotly.update('vagalProxyChart', { x: [vx], y: [vy] }, { shapes, annotations }, [0]);
 }
 
 function generateMetadataHeader(sessionData) {
@@ -5048,8 +5244,9 @@ function generateMetadataHeader(sessionData) {
     const sessionDate = new Date(startTime);
     const dateStr = sessionDate.toISOString().slice(0, 19).replace('T', ' ');
 
-    const srcTimestamps = sessionData.sessionTimestamps || timestamps;
-    const srcEventMarkers = sessionData.sessionEventMarkers || eventMarkers;
+    // Stored sessions must pass their own arrays; the live globals are used only for `live: true`
+    const srcTimestamps = sessionData.sessionTimestamps || (sessionData.live ? timestamps : []);
+    const srcEventMarkers = sessionData.sessionEventMarkers || (sessionData.live ? eventMarkers : []);
 
     // Calculate actual duration from timestamps
     const actualDuration = srcTimestamps.length > 0
@@ -5100,20 +5297,16 @@ async function generatePDFReport() {
 
     try {
         // ── Capture chart images ─────────────────────────────────────────────
-        const scale = 10;
+        const scale = appSettings.report.scale || 4;   // was a fixed ×10 (11 000 px plots, ~35 MB reports)
+        const cap = (cond, id, width, height) =>
+            cond ? Plotly.toImage(id, { format: 'png', width, height, scale }) : Promise.resolve(null);
         const [imgPSD, imgPoincare, imgRR, imgRMSSD, imgHR, imgVagal] = await Promise.all([
-            Plotly.toImage('psdChart',          { format: 'png', width: 1100, height: 600, scale }),
-            Plotly.toImage('poincareChart',     { format: 'png', width:  700, height: 600, scale }),
-            Plotly.toImage('rrChart',           { format: 'png', width: 1100, height: 380, scale }),
-            rollingRMSSD.length > 0
-                ? Plotly.toImage('rollingRMSSDChart', { format: 'png', width: 1100, height: 380, scale })
-                : Promise.resolve(null),
-            rrIntervals.length > 0
-                ? Plotly.toImage('hrChart',     { format: 'png', width: 1100, height: 380, scale })
-                : Promise.resolve(null),
-            rrIntervals.length > 0
-                ? Plotly.toImage('vagalProxyChart', { format: 'png', width: 1100, height: 380, scale })
-                : Promise.resolve(null),
+            cap(reportOn('spectrogram'),                          'psdChart',          1100, 600),
+            cap(reportOn('poincare'),                             'poincareChart',      700, 600),
+            cap(reportOn('rr'),                                   'rrChart',           1100, 380),
+            cap(reportOn('rmssd') && rollingRMSSD.length > 0,     'rollingRMSSDChart', 1100, 380),
+            cap(reportOn('hr'),                                   'hrChart',           1100, 380),
+            cap(reportOn('vagal'),                                'vagalProxyChart',   1100, 380),
         ]);
 
         // Compute Poincaré stats for report
@@ -5156,7 +5349,6 @@ async function generatePDFReport() {
 
         const sriResult = calculateSRI();
         const sri       = sriResult ? sriResult.score : 0;
-        const sriStatus = sriResult ? getSRIStatus(sri) : null;
 
         // ── Helpers ──────────────────────────────────────────────────────────
         const fmt  = (v, d = 1) => (v == null || !isFinite(v)) ? '—' : v.toFixed(d);
@@ -5374,13 +5566,13 @@ body{font-family:'Inter',system-ui,sans-serif;font-size:13px;color:var(--ink);
 <div class="rb">
 
 <!-- ── KPI CARDS ─────────────────────────────────────────────────────── -->
-<div class="kpi-row">
-  <div class="kpi" style="--kpi-accent:${sriColor}">
+${reportOn('kpis') ? `<div class="kpi-row">
+  ${appSettings.showSRI !== false ? `  <div class="kpi" style="--kpi-accent:${sriColor}">
     <div class="kpi-label">Stress Recovery Index</div>
     <div class="kpi-value" style="color:${sriColor}">${sri > 0 ? sri : '—'}</div>
     <div class="kpi-unit">out of 100</div>
     ${sri > 0 ? `<div class="kpi-badge" style="background:${sriColor}">${sriLabel}</div>` : ''}
-  </div>
+  </div>` : ''}
   <div class="kpi" style="--kpi-accent:#6366f1">
     <div class="kpi-label">RMSSD</div>
     <div class="kpi-value">${fmt(rmssd)}</div>
@@ -5396,10 +5588,10 @@ body{font-family:'Inter',system-ui,sans-serif;font-size:13px;color:var(--ink);
     <div class="kpi-value">${fmt(avgHR, 0)}</div>
     <div class="kpi-unit">bpm</div>
   </div>
-</div>
+</div>` : ''}
 
 <!-- ── INTERPRETATION BANNER ─────────────────────────────────────────── -->
-${sriResult ? (() => {
+${(reportOn('interpretation') && sriResult) ? (() => {
     let bg, color, icon, headline, body;
     if (sri >= 75) {
         color='#10b981'; bg='rgba(16,185,129,.07)'; icon='🌟';
@@ -5432,27 +5624,27 @@ ${sriResult ? (() => {
 })() : ''}
 
 <!-- ── CHARTS: RR + RMSSD ─────────────────────────────────────────────── -->
-<div class="sec">
+${(imgRR || imgRMSSD) ? `<div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Signal Overview</span></div>
-  <div class="chart-card">
+  ${imgRR ? `<div class="chart-card">
     <div class="chart-card-label">RR Intervals over Time${eventMarkers.length ? ' · Vertical markers = events' : ''}</div>
     <img src="${imgRR}" alt="RR Intervals chart">
-  </div>
+  </div>` : ''}
   ${imgRMSSD ? `<div class="chart-card">
     <div class="chart-card-label">Rolling RMSSD — 1-minute sliding window</div>
     <img src="${imgRMSSD}" alt="Rolling RMSSD chart">
   </div>` : ''}
-</div>
+</div>` : ''}
 
 <!-- ── CHARTS: PSD + POINCARÉ ─────────────────────────────────────────── -->
-<div class="sec">
+${(imgPSD || imgPoincare || reportOn('notes')) ? `<div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Frequency & Geometric Analysis</span></div>
-  <div class="charts-2col">
-    <div class="chart-card">
+  ${(imgPSD || imgPoincare) ? `<div class="charts-2col">
+    ${imgPSD ? `<div class="chart-card">
       <div class="chart-card-label">HRV Wavelet Spectrogram — Morlet CWT (ω₀ = 6, 4 Hz interpolation, Plasma colorscale = log₁₀ power)</div>
       <img src="${imgPSD}" alt="Power Spectral Density chart">
-    </div>
-    <div class="chart-card">
+    </div>` : ''}
+    ${imgPoincare ? `<div class="chart-card">
       <div class="chart-card-label">Poincaré Plot — RR(n) vs RR(n+1)</div>
       <img src="${imgPoincare}" alt="Poincaré plot">
       ${poincStats ? `<div style="padding:8px 14px;font-size:11px;color:var(--ink3);border-top:1px solid var(--border);display:flex;gap:24px;">
@@ -5460,14 +5652,14 @@ ${sriResult ? (() => {
         <span><strong style="color:var(--accent)">SD2</strong> ${poincStats.sd2} ms</span>
         <span><strong style="color:var(--accent)">SD1/SD2</strong> ${poincStats.ratio}</span>
       </div>` : ''}
-    </div>
-  </div>
-  <div class="note">
+    </div>` : ''}
+  </div>` : ''}
+  ${reportOn('notes') ? `<div class="note">
     <strong>Band legend:</strong> VLF 0.003–0.04 Hz · LF 0.04–0.15 Hz · HF 0.15–0.4 Hz.
     Spectrogram computed via Morlet CWT (ω₀ = 6) on RR series linearly interpolated to 4 Hz; colour = log₁₀(power). Dashed lines mark LF boundary (0.04 Hz, indigo) and HF boundary (0.15 Hz, pink). Band powers integrated from time-averaged scalogram.
     Poincaré SD1 reflects short-term (parasympathetic) variability; SD2 reflects long-term variability.
-  </div>
-</div>
+  </div>` : ''}
+</div>` : ''}
 
 <!-- ── HR + VAGAL PROXY ────────────────────────────────────────── -->
 ${(imgHR || imgVagal) ? `<div class="sec">
@@ -5483,7 +5675,7 @@ ${(imgHR || imgVagal) ? `<div class="sec">
 </div>` : ''}
 
 <!-- ── SRI BREAKDOWN ─────────────────────────────────────────────────── -->
-${sriResult ? `<div class="sec">
+${(reportOn('sriBreakdown') && sriResult) ? `<div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Stress Recovery Index — Component Breakdown</span></div>
   <div class="sri-row">
     <div class="sri-component">
@@ -5514,7 +5706,7 @@ ${sriResult ? `<div class="sec">
   </div>
 </div>` : ''}
 
-<!-- ── TIME DOMAIN ────────────────────────────────────────────────────── -->
+${reportOn('timeDomain') ? `<!-- ── TIME DOMAIN ────────────────────────────────────────────────────── -->
 <div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Time Domain Analysis</span></div>
   <table class="mt">
@@ -5532,9 +5724,9 @@ ${sriResult ? `<div class="sec">
       ${row('Data Quality',          dquality + '%', '—',   '&gt;95%',       'Low quality: excessive artifacts removed; check sensor contact')}
     </tbody>
   </table>
-</div>
+</div>` : ''}
 
-<!-- ── FREQUENCY DOMAIN ───────────────────────────────────────────────── -->
+${reportOn('freqDomain') ? `<!-- ── FREQUENCY DOMAIN ───────────────────────────────────────────────── -->
 <div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Frequency Domain Analysis</span></div>
   <table class="mt">
@@ -5549,18 +5741,18 @@ ${sriResult ? `<div class="sec">
       ${row('LF / HF Ratio',            fmt(lfhfRatio, 2),                     '—',   '1.5–2.0 (rest)',       '&gt;2.5: sympathetic dominance or stress; &lt;0.8: vagal dominance')}
     </tbody>
   </table>
-</div>
+</div>` : ''}
 
-<!-- ── EVENTS ─────────────────────────────────────────────────────────── -->
+${reportOn('events') ? `<!-- ── EVENTS ─────────────────────────────────────────────────────────── -->
 <div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Recorded Events (${eventMarkers.length})</span></div>
   <table class="ev-table">
     <thead><tr><th>Time (s)</th><th>Event Type</th><th>Annotation</th></tr></thead>
     <tbody>${eventRows}</tbody>
   </table>
-</div>
+</div>` : ''}
 
-<!-- ── SESSION METADATA ───────────────────────────────────────────────── -->
+${reportOn('metadata') ? `<!-- ── SESSION METADATA ───────────────────────────────────────────────── -->
 <div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Session Metadata</span></div>
   <table class="ev-table">
@@ -5576,9 +5768,9 @@ ${sriResult ? `<div class="sec">
       ${peakHR > 0 ? `<tr><th>Peak Heart Rate</th><td>${peakHR} bpm</td></tr>` : ''}
     </tbody>
   </table>
-</div>
+</div>` : ''}
 
-<!-- ── REFERENCE RANGES ───────────────────────────────────────────────── -->
+${reportOn('references') ? `<!-- ── REFERENCE RANGES ───────────────────────────────────────────────── -->
 <div class="sec">
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">SRI Reference Scale</span></div>
   <table class="mt">
@@ -5610,7 +5802,7 @@ ${sriResult ? `<div class="sec">
       </tr>
     </tbody>
   </table>
-</div>
+</div>` : ''}
 
 </div><!-- /.rb -->
 
@@ -5668,17 +5860,12 @@ function exportData() {
     const isTxtFormat = txtToggle.checked;
     const includeRaw = rawDataToggle.checked;
 
-    // Use sessionStartTime instead of startTime
-    const sessionDate = new Date(sessionStartTime);
+    // Same baseline as the data timestamps (end of calibration); falls back for restored sessions
+    const sessionDate = new Date(calibrationStartTime || sessionStartTime);
     const dateStr = sessionDate.toISOString().slice(0, 16); // YYYY-MM-DD
     const tagsStr = sessionTags.length > 0 ? '_' + sessionTags.join('-') : '';
     const dataType = includeRaw ? '_raw' : '_clean';
     const filename = `${baseFilename}_${dateStr}${tagsStr}${dataType}`;
-
-    // Calculate actual recorded duration
-    const actualDuration = timestamps.length > 0
-        ? Math.floor(timestamps[timestamps.length - 1])
-        : 0;
 
     // Select which data to export
     const exportRR = includeRaw ? rawRRIntervals : rrIntervals;
@@ -5704,6 +5891,7 @@ function exportData() {
             rrCount: rrIntervals.length,
             rawRRCount: rawRRIntervals.length,
             eventCount: eventMarkers.length,
+            live: true,
             includeRaw: includeRaw
         });
 
@@ -5752,12 +5940,6 @@ async function copyToClipboard() {
             content += `${exportRR[i].toFixed(3)}\n`;
         }
     } else {
-        // Use sessionStartTime instead of startTime
-        const sessionDate = new Date(sessionStartTime);
-        const actualDuration = exportTimes.length > 0
-            ? Math.floor(exportTimes[exportTimes.length - 1])
-            : 0;
-
         // Copy CSV format with unified metadata
         content = generateMetadataHeader({
             filename: document.getElementById('filename').value || 'polar-h10-data',
@@ -5766,6 +5948,7 @@ async function copyToClipboard() {
             rrCount: rrIntervals.length,
             rawRRCount: rawRRIntervals.length,
             eventCount: eventMarkers.length,
+            live: true,
             includeRaw: includeRaw
         });
 
@@ -5797,13 +5980,464 @@ async function copyToClipboard() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Customisation layer — appearance, SRI switch, backup/restore of settings
+// (everything persists in localStorage via saveSettings(); no new dependencies)
+// ═══════════════════════════════════════════════════════════════════════
+const ACCENT_PRESETS = {
+    indigo:  { name: 'Indigo',  p: '#6366f1', s: '#ec4899', t: '#22d3ee' },
+    teal:    { name: 'Teal',    p: '#14b8a6', s: '#6366f1', t: '#38bdf8' },
+    emerald: { name: 'Emerald', p: '#10b981', s: '#22d3ee', t: '#a3e635' },
+    rose:    { name: 'Rose',    p: '#f43f5e', s: '#f59e0b', t: '#ec4899' },
+    amber:   { name: 'Amber',   p: '#f59e0b', s: '#ef4444', t: '#fde047' },
+    violet:  { name: 'Violet',  p: '#8b5cf6', s: '#ec4899', t: '#38bdf8' },
+    mono:    { name: 'Mono',    p: '#9ca3af', s: '#6b7280', t: '#e5e7eb' }
+};
+
+function hexToRgbStr(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+}
+
+function applyAppearance() {
+    const a = appSettings.appearance;
+    const pr = ACCENT_PRESETS[a.accent] || ACCENT_PRESETS.indigo;
+    const root = document.documentElement.style;
+    root.setProperty('--accent-primary',   pr.p);
+    root.setProperty('--accent-secondary', pr.s);
+    root.setProperty('--accent-tertiary',  pr.t);
+    root.setProperty('--accent-rgb',  hexToRgbStr(pr.p));
+    root.setProperty('--accent2-rgb', hexToRgbStr(pr.s));
+    root.setProperty('--accent3-rgb', hexToRgbStr(pr.t));
+    root.setProperty('--radius', `${a.radius}px`);
+    document.body.classList.toggle('density-compact', a.density === 'compact');
+    document.body.classList.toggle('no-fx',     a.effects === false);
+    document.body.classList.toggle('no-motion', a.motion  === false);
+    document.body.classList.toggle('no-sri',    appSettings.showSRI === false);
+}
+
+// Reflect appSettings into the Settings-panel controls
+function syncCustomControls() {
+    const a = appSettings.appearance;
+    const mark = (sel, val) => document.querySelectorAll(sel).forEach(b =>
+        b.classList.toggle('active', String(b.dataset.val) === String(val)));
+    mark('#accentGroup .swatch', a.accent);
+    mark('#themeGroup .sett-chip', getThemeMode());
+    mark('#densityGroup .sett-chip', a.density);
+    mark('#radiusGroup .sett-chip', a.radius);
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.checked = v; };
+    set('fxToggle', a.effects !== false);
+    set('motionToggle', a.motion !== false);
+    set('exportLightToggle', appSettings.exportLight !== false);
+    set('showSRIToggle', appSettings.showSRI !== false);
+}
+
+function applySRIVisibility() {
+    const on = appSettings.showSRI !== false;
+    document.body.classList.toggle('no-sri', !on);
+    if (on) requestAnimationFrame(() => {            // redraw the gauge now that it is visible again
+        drawSRIGauge(sriScore);
+        if (rrIntervals.length >= 50) updateSRI();
+    });
+}
+
+function initCustomizationControls() {
+    // Accent swatches
+    const sw = document.getElementById('accentGroup');
+    sw.innerHTML = Object.entries(ACCENT_PRESETS).map(([k, v]) =>
+        `<button type="button" class="swatch" data-val="${k}" title="${v.name}" aria-label="${v.name} accent" style="--a:${v.p};--b:${v.s}"></button>`).join('');
+    sw.addEventListener('click', e => {
+        const b = e.target.closest('.swatch'); if (!b) return;
+        appSettings.appearance.accent = b.dataset.val;
+        saveSettings(); applyAppearance(); syncCustomControls();
+    });
+    const chipGroup = (id, apply) => document.getElementById(id).addEventListener('click', e => {
+        const b = e.target.closest('.sett-chip'); if (!b) return;
+        apply(b.dataset.val); saveSettings(); applyAppearance(); syncCustomControls();
+    });
+    document.getElementById('themeGroup').addEventListener('click', e => {
+        const b = e.target.closest('.sett-chip'); if (b) setThemeMode(b.dataset.val);
+    });
+    chipGroup('densityGroup', v => { appSettings.appearance.density = v; setTimeout(() => { applyResponsiveGrid(); resizeAllCharts(); }, 50); });
+    chipGroup('radiusGroup',  v => { appSettings.appearance.radius = parseInt(v); });
+    const bindCheck = (id, fn) => document.getElementById(id).addEventListener('change', e => { fn(e.target.checked); saveSettings(); applyAppearance(); });
+    bindCheck('fxToggle',          v => appSettings.appearance.effects = v);
+    bindCheck('motionToggle',      v => appSettings.appearance.motion = v);
+    bindCheck('exportLightToggle', v => appSettings.exportLight = v);
+    bindCheck('showSRIToggle',     v => { appSettings.showSRI = v; });
+    document.getElementById('showSRIToggle').addEventListener('change', () => { applySRIVisibility(); renderReportOptions(); broadcastMonitorUpdate(); });
+
+    // Backup
+    document.getElementById('exportSettingsBtn').addEventListener('click', exportSettings);
+    document.getElementById('importSettingsBtn').addEventListener('click', () => document.getElementById('importSettingsFile').click());
+    document.getElementById('importSettingsFile').addEventListener('change', e => { if (e.target.files[0]) importSettings(e.target.files[0]); e.target.value = ''; });
+    document.getElementById('resetAllSettingsBtn').addEventListener('click', resetAllSettings);
+}
+
+// ── Backup / restore ─────────────────────────────────────────────────────
+function exportSettings() {
+    let grid = null;
+    try { grid = JSON.parse(localStorage.getItem('cardioTraceGridLayout') || 'null'); } catch (e) {}
+    const payload = {
+        app: 'CardioTrace', version: 1, exportedAt: new Date().toISOString(),
+        theme: getThemeMode(), settings: appSettings, gridLayout: grid
+    };
+    downloadFile(JSON.stringify(payload, null, 2), 'cardiotrace-settings.json', 'application/json');
+}
+
+function importSettings(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+        try {
+            const d = JSON.parse(reader.result);
+            if (d.app !== 'CardioTrace' || !d.settings) throw new Error('Not a CardioTrace settings file');
+            localStorage.setItem('cardioTraceSettings', JSON.stringify(mergeSettings(d.settings)));
+            if (d.theme) localStorage.setItem('theme', d.theme);
+            if (d.gridLayout) localStorage.setItem('cardioTraceGridLayout', JSON.stringify(d.gridLayout));
+            location.reload();                       // simplest way to re-apply everything consistently
+        } catch (err) {
+            alert('Could not import settings: ' + err.message);
+        }
+    };
+    reader.readAsText(file);
+}
+
+function resetAllSettings() {
+    if (!confirm('Reset ALL settings, plot customisations and layout to defaults? Saved sessions are not affected.')) return;
+    ['cardioTraceSettings', 'cardioTraceGridLayout', 'theme'].forEach(k => localStorage.removeItem(k));
+    location.reload();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Per-plot tools — ⬇ download (PNG / SVG / CSV) and ⚙ plot settings
+// ═══════════════════════════════════════════════════════════════════════
+const CHART_META = {
+    ecg:          { el: 'ecgChart',          label: 'ECG Signal',        kind: 'line',    color: '#6366f1', width: 1.5, win: false, ylab: 'amplitude_uV' },
+    rr:           { el: 'rrChart',           label: 'RR Intervals',      kind: 'line',    color: '#ec4899', width: 2,   win: true,  ylab: 'rr_ms',    upd: () => updateRRChart() },
+    rollingRMSSD: { el: 'rollingRMSSDChart', label: 'Rolling RMSSD',     kind: 'line',    color: '#22d3ee', width: 2,   win: true,  ylab: 'rmssd_ms', upd: () => updateRollingRMSSD() },
+    poincare:     { el: 'poincareChart',     label: 'Poincaré Plot',     kind: 'scatter', color: '#a78bfa', size: 5 },
+    psd:          { el: 'psdChart',          label: 'Wavelet Spectrogram', kind: 'heatmap', colorscale: 'Plasma' },
+    hr:           { el: 'hrChart',           label: 'Heart Rate',        kind: 'line',    color: '#f43f5e', width: 2,   win: true,  ylab: 'hr_bpm',   upd: () => updateHRChart() },
+    vagalProxy:   { el: 'vagalProxyChart',   label: 'Vagal Proxy',       kind: 'line',    color: '#f59e0b', width: 2,   win: true,  ylab: 'rmssd_over_sdnn', yDefault: [0, 1], upd: () => updateVagalProxyChart() }
+};
+const COLORSCALES = ['Plasma', 'Viridis', 'Inferno', 'Magma', 'Cividis', 'Turbo', 'Hot', 'Blues'];
+const WINDOW_OPTIONS = [[0, 'All'], [60, '1 min'], [120, '2 min'], [300, '5 min'], [600, '10 min'], [1800, '30 min']];
+const PLOT_GRID_COLOR = 'rgba(128,128,128,0.2)';
+
+function chartPref(key) {
+    const m = CHART_META[key];
+    return {
+        color: m.color, width: m.width, size: m.size || 5, colorscale: m.colorscale,
+        grid: false, yMode: 'default', yMin: null, yMax: null, win: 0, ellipse: true, identity: true,
+        ...(appSettings.chartPrefs[key] || {})
+    };
+}
+function saveChartPref(key, patch) {
+    appSettings.chartPrefs[key] = { ...(appSettings.chartPrefs[key] || {}), ...patch };
+    saveSettings();
+}
+function hexA(hex, a) { return `rgba(${hexToRgbStr(hex)}, ${a})`; }
+
+// Apply one plot's customisation to its live Plotly graph
+function applyChartPrefs(key) {
+    const m = CHART_META[key], gd = document.getElementById(m.el);
+    if (!gd || !gd.data) return;
+    const p = chartPref(key);
+    const lay = {
+        'xaxis.showgrid': !!p.grid, 'yaxis.showgrid': !!p.grid,
+        'xaxis.gridcolor': PLOT_GRID_COLOR, 'yaxis.gridcolor': PLOT_GRID_COLOR
+    };
+    if (m.kind !== 'heatmap') {
+        const fixed = p.yMode === 'fixed' && isFinite(p.yMin) && isFinite(p.yMax) && p.yMin !== null && p.yMax !== null && p.yMin < p.yMax;
+        if (fixed)                     lay['yaxis.range'] = [p.yMin, p.yMax];
+        else if (p.yMode === 'default' && m.yDefault) lay['yaxis.range'] = m.yDefault.slice();
+        else                           lay['yaxis.autorange'] = true;
+    }
+    Plotly.relayout(gd, lay);
+    if (m.kind === 'line') {
+        const st = { 'line.color': p.color, 'line.width': p.width };
+        if (key === 'vagalProxy') st.fillcolor = hexA(p.color, 0.08);
+        Plotly.restyle(gd, st, [0]);
+    } else if (m.kind === 'scatter') {
+        Plotly.restyle(gd, { 'marker.color': p.color, 'marker.size': p.size }, [0]);
+        Plotly.restyle(gd, { visible: !!p.ellipse }, [1]);
+        Plotly.restyle(gd, { visible: !!p.identity }, [2]);
+    } else if (m.kind === 'heatmap') {
+        Plotly.restyle(gd, { colorscale: p.colorscale }, [0]);
+    }
+}
+function applyAllChartPrefs() { Object.keys(CHART_META).forEach(applyChartPrefs); }
+
+// Optional time window for the time-series plots (display only — data are untouched)
+function sliceWindow(key, x, y) {
+    const w = chartPref(key).win;
+    if (!w || !x.length) return [x, y];
+    const last = x[x.length - 1];
+    let i = x.length - 1;
+    while (i > 0 && x[i - 1] >= last - w) i--;
+    return [x.slice(i), y.slice(i)];
+}
+
+// ── Download ─────────────────────────────────────────────────────────────
+function chartToCSV(key) {
+    const m = CHART_META[key], gd = document.getElementById(m.el), t = gd.data[0];
+    const rows = [];
+    if (m.kind === 'heatmap') {
+        rows.push('time_s,frequency_hz,log10_power');
+        (t.z || []).forEach((row, fi) => (row || []).forEach((v, ti) => rows.push(`${t.x[ti]},${t.y[fi]},${v}`)));
+    } else if (key === 'poincare') {
+        rows.push('rr_n_ms,rr_n_plus_1_ms');
+        (t.x || []).forEach((v, i) => rows.push(`${v},${t.y[i]}`));
+    } else {
+        rows.push(`time_s,${m.ylab}`);
+        (t.x || []).forEach((v, i) => rows.push(`${v},${t.y[i]}`));
+    }
+    return rows.join('\n');
+}
+
+async function downloadChart(key, fmt) {
+    const m = CHART_META[key], gd = document.getElementById(m.el);
+    if (!gd || !gd.data) return;
+    const base = `${document.getElementById('filename').value || 'cardiotrace'}_${key}`;
+    if (fmt === 'csv') { downloadFile(chartToCSV(key), `${base}.csv`, 'text/csv'); return; }
+    const light = appSettings.exportLight !== false;
+    try {
+        if (light) await Plotly.relayout(gd, {
+            paper_bgcolor: '#ffffff', plot_bgcolor: '#ffffff', 'font.color': '#111827',
+            'xaxis.color': '#111827', 'yaxis.color': '#111827'
+        });
+        await Plotly.downloadImage(gd, {
+            format: fmt, filename: base,
+            width: Math.max(gd.clientWidth, 900), height: Math.max(gd.clientHeight, 520),
+            scale: fmt === 'png' ? 3 : 1
+        });
+    } finally {
+        if (light) updateChartThemes();              // back to the on-screen look (+ per-plot prefs)
+    }
+}
+
+// ── Popover (download menu / settings) ───────────────────────────────────
+let _cpOpenFor = null;
+function closeChartPopover() {
+    const pop = document.getElementById('chartPopover');
+    pop.classList.remove('open');
+    document.querySelectorAll('.chart-tools.is-open').forEach(t => t.classList.remove('is-open'));
+    _cpOpenFor = null;
+}
+function placeChartPopover(anchor) {
+    const pop = document.getElementById('chartPopover');
+    if (window.innerWidth <= 600) { pop.style.left = pop.style.top = ''; return; }     // CSS bottom sheet
+    const r = anchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+    let left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
+    let top = r.bottom + 6;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+}
+function openChartPopover(key, mode, anchor) {
+    const tag = key + ':' + mode;
+    if (_cpOpenFor === tag) { closeChartPopover(); return; }
+    closeChartPopover();
+    const pop = document.getElementById('chartPopover');
+    pop.innerHTML = mode === 'menu' ? chartMenuHTML(key) : chartSettingsHTML(key);
+    pop.dataset.key = key; pop.dataset.mode = mode;
+    pop.classList.add('open');
+    anchor.closest('.chart-tools').classList.add('is-open');
+    _cpOpenFor = tag;
+    placeChartPopover(anchor);
+}
+
+function chartMenuHTML(key) {
+    const m = CHART_META[key];
+    return `<div class="cp-title">${m.label}</div>
+        <div class="cp-menu">
+            <button type="button" data-dl="png">🖼️ PNG image<span>${appSettings.exportLight !== false ? 'white background' : 'as shown'}</span></button>
+            <button type="button" data-dl="svg">✒️ SVG vector<span>for journals</span></button>
+            <button type="button" data-dl="csv">📄 CSV data<span>plotted values</span></button>
+        </div>`;
+}
+
+function chartSettingsHTML(key) {
+    const m = CHART_META[key], p = chartPref(key);
+    const row = (label, ctl) => `<div class="cp-row"><label>${label}</label>${ctl}</div>`;
+    let h = `<div class="cp-title">${m.label} · settings</div>`;
+    if (m.kind === 'line') {
+        h += row('Colour', `<input type="color" data-f="color" value="${p.color}">`);
+        h += row('Line width', `<span class="cp-range"><input type="range" data-f="width" min="1" max="4" step="0.5" value="${p.width}"><b>${p.width}</b></span>`);
+    } else if (m.kind === 'scatter') {
+        h += row('Point colour', `<input type="color" data-f="color" value="${p.color}">`);
+        h += row('Point size', `<span class="cp-range"><input type="range" data-f="size" min="2" max="12" step="1" value="${p.size}"><b>${p.size}</b></span>`);
+        h += row('SD1/SD2 ellipse', `<input type="checkbox" data-f="ellipse" ${p.ellipse ? 'checked' : ''}>`);
+        h += row('Identity line', `<input type="checkbox" data-f="identity" ${p.identity ? 'checked' : ''}>`);
+    } else {
+        h += row('Colour scale', `<select data-f="colorscale">${COLORSCALES.map(c => `<option ${c === p.colorscale ? 'selected' : ''}>${c}</option>`).join('')}</select>`);
+    }
+    h += row('Grid lines', `<input type="checkbox" data-f="grid" ${p.grid ? 'checked' : ''}>`);
+    if (m.kind !== 'heatmap') {
+        h += row('Y axis', `<select data-f="yMode">
+            <option value="default" ${p.yMode === 'default' ? 'selected' : ''}>Default</option>
+            <option value="auto" ${p.yMode === 'auto' ? 'selected' : ''}>Auto-fit</option>
+            <option value="fixed" ${p.yMode === 'fixed' ? 'selected' : ''}>Fixed</option></select>`);
+        h += `<div class="cp-row cp-yrange" ${p.yMode === 'fixed' ? '' : 'hidden'}><label>Min / Max</label>
+            <span><input type="number" data-f="yMin" step="any" value="${p.yMin ?? ''}" placeholder="min"><input type="number" data-f="yMax" step="any" value="${p.yMax ?? ''}" placeholder="max"></span></div>`;
+    }
+    if (m.win) {
+        h += row('Time window', `<select data-f="win">${WINDOW_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === p.win ? 'selected' : ''}>${l}</option>`).join('')}</select>`);
+    }
+    h += `<div class="cp-actions"><button type="button" class="btn btn-secondary" data-act="reset">↺ Reset plot</button><button type="button" class="btn btn-primary" data-act="close">Done</button></div>`;
+    return h;
+}
+
+function initChartTools() {
+    Object.entries(CHART_META).forEach(([key, m]) => {
+        const box = document.getElementById(m.el)?.closest('.chart-container');
+        if (!box || box.querySelector('.chart-tools')) return;
+        const t = document.createElement('div');
+        t.className = 'chart-tools';
+        t.innerHTML = `<button type="button" class="ct-btn" data-act="menu" title="Download plot" aria-label="Download ${m.label}">⬇</button>` +
+                      `<button type="button" class="ct-btn" data-act="cfg" title="Plot settings" aria-label="${m.label} settings">⚙</button>`;
+        t.addEventListener('click', e => {
+            const b = e.target.closest('.ct-btn'); if (!b) return;
+            e.stopPropagation();
+            openChartPopover(key, b.dataset.act === 'menu' ? 'menu' : 'settings', b);
+        });
+        box.appendChild(t);
+    });
+
+    const pop = document.getElementById('chartPopover');
+    pop.addEventListener('click', e => {
+        const key = pop.dataset.key;
+        const dl = e.target.closest('[data-dl]');
+        if (dl) { closeChartPopover(); downloadChart(key, dl.dataset.dl); return; }
+        const act = e.target.closest('[data-act]');
+        if (!act) return;
+        if (act.dataset.act === 'close') closeChartPopover();
+        if (act.dataset.act === 'reset') {
+            delete appSettings.chartPrefs[key]; saveSettings();
+            applyChartPrefs(key); CHART_META[key].upd && CHART_META[key].upd();
+            pop.innerHTML = chartSettingsHTML(key);
+        }
+    });
+    const onField = e => {
+        const f = e.target.dataset.f; if (!f) return;
+        const key = pop.dataset.key, el = e.target;
+        let v = el.type === 'checkbox' ? el.checked : el.type === 'number' ? (el.value === '' ? null : parseFloat(el.value))
+              : (f === 'width' || f === 'size' || f === 'win') ? parseFloat(el.value) : el.value;
+        saveChartPref(key, { [f]: v });
+        if (el.type === 'range') el.nextElementSibling.textContent = v;
+        if (f === 'yMode') pop.querySelector('.cp-yrange').hidden = v !== 'fixed';
+        if ((f === 'yMin' || f === 'yMax') && chartPref(key).yMode !== 'fixed') return;
+        applyChartPrefs(key);
+        if (f === 'win' && CHART_META[key].upd) CHART_META[key].upd();
+    };
+    pop.addEventListener('input', onField);
+    pop.addEventListener('change', onField);
+
+    document.addEventListener('pointerdown', e => {
+        if (!_cpOpenFor) return;
+        if (e.target.closest('#chartPopover') || e.target.closest('.chart-tools')) return;
+        closeChartPopover();
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeChartPopover(); });
+    window.addEventListener('resize', closeChartPopover);
+    document.addEventListener('scroll', () => { if (_cpOpenFor && window.innerWidth > 600) closeChartPopover(); }, true);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Report contents — choose which sections the HTML report includes
+// ═══════════════════════════════════════════════════════════════════════
+const REPORT_SECTIONS = [
+    { id: 'kpis',           label: 'Summary cards',          group: 'Overview' },
+    { id: 'interpretation', label: 'Interpretation banner',  group: 'Overview', sri: true },
+    { id: 'rr',             label: 'RR intervals plot',      group: 'Plots' },
+    { id: 'rmssd',          label: 'Rolling RMSSD plot',     group: 'Plots' },
+    { id: 'spectrogram',    label: 'Wavelet spectrogram',    group: 'Plots' },
+    { id: 'poincare',       label: 'Poincaré plot',          group: 'Plots' },
+    { id: 'hr',             label: 'Heart rate + zones',     group: 'Plots' },
+    { id: 'vagal',          label: 'Vagal proxy plot',       group: 'Plots' },
+    { id: 'timeDomain',     label: 'Time-domain table',      group: 'Tables' },
+    { id: 'freqDomain',     label: 'Frequency-domain table', group: 'Tables' },
+    { id: 'events',         label: 'Event log',              group: 'Tables' },
+    { id: 'metadata',       label: 'Session metadata',       group: 'Tables' },
+    { id: 'sriBreakdown',   label: 'SRI breakdown',          group: 'SRI', sri: true },
+    { id: 'references',     label: 'SRI reference scale',    group: 'SRI', sri: true },
+    { id: 'notes',          label: 'Methods notes',          group: 'Notes' }
+];
+const REPORT_PRESETS = {
+    all:        () => REPORT_SECTIONS.map(s => s.id),
+    essentials: () => ['kpis', 'rr', 'spectrogram', 'poincare', 'timeDomain', 'freqDomain', 'metadata'],
+    charts:     () => ['rr', 'rmssd', 'spectrogram', 'poincare', 'hr', 'vagal'],
+    tables:     () => ['kpis', 'timeDomain', 'freqDomain', 'events', 'metadata']
+};
+
+// Is a section included right now? (missing key = on; SRI sections follow the SRI switch)
+function reportOn(id) {
+    const def = REPORT_SECTIONS.find(s => s.id === id);
+    if (def && def.sri && appSettings.showSRI === false) return false;
+    return appSettings.report.sections[id] !== false;
+}
+
+function renderReportOptions() {
+    const box = document.getElementById('reportOptionsList');
+    if (!box) return;
+    document.querySelectorAll('#reportScaleGroup .sett-chip').forEach(b =>
+        b.classList.toggle('active', parseInt(b.dataset.val) === (appSettings.report.scale || 4)));
+    let lastGroup = '';
+    box.innerHTML = REPORT_SECTIONS.filter(s => !(s.sri && appSettings.showSRI === false)).map(s => {
+        const head = s.group !== lastGroup ? `<div class="rep-group">${s.group}</div>` : '';
+        lastGroup = s.group;
+        return `${head}<label class="rep-item"><input type="checkbox" data-sec="${s.id}" ${reportOn(s.id) ? 'checked' : ''}><span>${s.label}</span></label>`;
+    }).join('');
+}
+
+function openReportOptions() {
+    renderReportOptions();
+    document.getElementById('reportOptionsPanel').classList.add('active');
+    document.getElementById('reportOptionsOverlay').classList.add('active');
+    document.getElementById('reportGenerateBtn').disabled = rrIntervals.length === 0;
+}
+function closeReportOptions() {
+    document.getElementById('reportOptionsPanel').classList.remove('active');
+    document.getElementById('reportOptionsOverlay').classList.remove('active');
+}
+
+function initReportOptions() {
+    renderReportOptions();
+    document.getElementById('reportOptionsBtn').addEventListener('click', openReportOptions);
+    document.getElementById('settingsReportBtn').addEventListener('click', () => { closeSettings(); openReportOptions(); });
+    document.getElementById('reportOptionsClose').addEventListener('click', closeReportOptions);
+    document.getElementById('reportOptionsDone').addEventListener('click', closeReportOptions);
+    document.getElementById('reportOptionsOverlay').addEventListener('click', closeReportOptions);
+    document.getElementById('reportGenerateBtn').addEventListener('click', () => { closeReportOptions(); generatePDFReport(); });
+    document.getElementById('reportOptionsList').addEventListener('change', e => {
+        const id = e.target.dataset.sec; if (!id) return;
+        appSettings.report.sections[id] = e.target.checked;
+        saveSettings();
+    });
+    document.getElementById('reportScaleGroup').addEventListener('click', e => {
+        const b = e.target.closest('.sett-chip'); if (!b) return;
+        appSettings.report.scale = parseInt(b.dataset.val); saveSettings(); renderReportOptions();
+    });
+    document.getElementById('reportPresets').addEventListener('click', e => {
+        const b = e.target.closest('[data-preset]'); if (!b) return;
+        const on = new Set(REPORT_PRESETS[b.dataset.preset]());
+        REPORT_SECTIONS.forEach(s => { appSettings.report.sections[s.id] = on.has(s.id); });
+        saveSettings(); renderReportOptions();
+    });
+}
+
 // Initialize on page load
 (async () => {
     try {
         loadSettings();
+        applyAppearance();
+        initCustomizationControls();
+        initChartTools();
+        initReportOptions();
+
         await initDB();
         await updateHistoryBadge();
         loadTheme();
+        updateChartThemes();            // also applies per-plot customisation
         initChartPlaceholders();
         applySettings();
         initGrid();

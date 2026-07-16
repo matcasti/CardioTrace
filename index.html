@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>CardioTrace</title>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link rel="preconnect" href="https://cdn.plot.ly" crossorigin>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" defer></script>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@8.4.0/dist/gridstack.min.css">
 </head>
@@ -218,6 +219,7 @@
                                 <span id="currentProtocolName">Free Recording</span>
                                 <span id="currentProtocolDuration"></span>
                             </div>
+                            <button class="btn btn-primary" id="startProtocolBtn" style="display:none;" title="Start the selected protocol now">▶ Start</button>
                             <button class="btn btn-secondary" id="changeProtocolBtn">Change</button>
                         </div>
 
@@ -244,6 +246,7 @@
                             <button class="btn btn-secondary" id="exportBtn" disabled>💾 Download</button>
                             <button class="btn btn-secondary" id="copyBtn" disabled>📋 Copy</button>
                             <button class="btn btn-primary" id="reportBtn" disabled>📄 Report</button>
+                            <button class="btn btn-secondary btn-icon-only" id="reportOptionsBtn" title="Choose what the report contains" aria-label="Report contents">⚙</button>
                         </div>
                         <div class="toggle-group">
                             <span class="toggle-label">RR only</span>
@@ -576,7 +579,7 @@
                                         <th>Samples</th>
                                         <th>Avg RR</th>
                                         <th>RMSSD</th>
-                                        <th>SRI</th>
+                                        <th class="sri-el">SRI</th>
                                         <th>Events</th>
                                         <th>Tags</th>
                                         <th>Actions</th>
@@ -613,7 +616,7 @@
                 <!-- Trends section -->
                 <div id="analyze-trends" class="analyze-section is-active">
                     <div class="analyze-charts-col">
-                        <div class="analyze-chart-card">
+                        <div class="analyze-chart-card sri-el">
                             <div class="analyze-chart-label">Stress Recovery Index over time</div>
                             <div id="analyzeChartSRI" class="analyze-chart-div"></div>
                         </div>
@@ -913,6 +916,83 @@
                 </div>
 
                 <div class="sett-section">
+                    <div class="sett-section-head"><span class="sett-section-icon">🎨</span>Appearance</div>
+                    <div class="sett-card">
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info"><span class="sett-row-label">Accent colour</span></div>
+                            <div class="swatch-row" id="accentGroup"></div>
+                        </div>
+                        <div class="sett-divider"></div>
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info"><span class="sett-row-label">Theme</span></div>
+                            <div class="sett-chip-group" id="themeGroup">
+                                <button class="sett-chip" data-val="dark">Dark</button>
+                                <button class="sett-chip" data-val="light">Light</button>
+                                <button class="sett-chip" data-val="auto">Auto</button>
+                            </div>
+                        </div>
+                        <div class="sett-divider"></div>
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info"><span class="sett-row-label">Density</span></div>
+                            <div class="sett-chip-group sett-chip-group-2" id="densityGroup">
+                                <button class="sett-chip" data-val="comfortable">Comfortable</button>
+                                <button class="sett-chip" data-val="compact">Compact</button>
+                            </div>
+                        </div>
+                        <div class="sett-divider"></div>
+                        <div class="sett-row sett-row-stacked">
+                            <div class="sett-row-info"><span class="sett-row-label">Corners</span></div>
+                            <div class="sett-chip-group" id="radiusGroup">
+                                <button class="sett-chip" data-val="6">Sharp</button>
+                                <button class="sett-chip" data-val="14">Rounded</button>
+                                <button class="sett-chip" data-val="20">Soft</button>
+                            </div>
+                        </div>
+                        <div class="sett-divider"></div>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-info"><span>Background effects</span><span>Ambient glow and grain</span></div>
+                            <input type="checkbox" id="fxToggle" class="sett-checkbox">
+                        </label>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-info"><span>Animations</span><span>Pulses, glows and transitions</span></div>
+                            <input type="checkbox" id="motionToggle" class="sett-checkbox">
+                        </label>
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-info"><span>White background on plot export</span><span>PNG / SVG downloads, publication-ready</span></div>
+                            <input type="checkbox" id="exportLightToggle" class="sett-checkbox">
+                        </label>
+                    </div>
+                </div>
+
+                <div class="sett-section">
+                    <div class="sett-section-head"><span class="sett-section-icon">🧩</span>Display &amp; Reports</div>
+                    <div class="sett-card sett-toggles">
+                        <label class="sett-toggle-row">
+                            <div class="sett-toggle-icon">🧘</div>
+                            <div class="sett-toggle-info"><span>Stress Recovery Index</span><span>Show the SRI panel, scores and columns</span></div>
+                            <input type="checkbox" id="showSRIToggle" class="sett-checkbox">
+                        </label>
+                    </div>
+                    <div class="sett-card" style="margin-top:8px;">
+                        <p class="sett-hint-text">Each plot has its own ⬇ download and ⚙ settings buttons (top-right of the plot).</p>
+                        <button class="btn btn-secondary" id="settingsReportBtn" style="width:100%;margin-top:10px;">📄 Choose report contents…</button>
+                    </div>
+                </div>
+
+                <div class="sett-section">
+                    <div class="sett-section-head"><span class="sett-section-icon">💾</span>Backup</div>
+                    <div class="sett-card">
+                        <p class="sett-hint-text">Every setting, plot customisation and the chart layout are saved automatically in this browser. Export them to move to another device.</p>
+                        <div class="sett-btn-row">
+                            <button class="btn btn-secondary" id="exportSettingsBtn">⬇ Export</button>
+                            <button class="btn btn-secondary" id="importSettingsBtn">⬆ Import</button>
+                            <button class="btn btn-danger" id="resetAllSettingsBtn">↺ Reset all</button>
+                        </div>
+                        <input type="file" id="importSettingsFile" accept="application/json,.json" style="display:none;">
+                    </div>
+                </div>
+
+                <div class="sett-section">
                     <div class="sett-section-head"><span class="sett-section-icon">⊞</span>Chart Layout</div>
                     <div class="sett-card">
                         <p class="sett-hint-text">Drag charts by their title bar · Resize from any edge or corner · Layout is saved automatically.</p>
@@ -922,6 +1002,38 @@
 
             </div><!-- /.modal-content -->
         </div><!-- /#settingsPanel -->
+
+        <!-- Report contents modal -->
+        <div class="modal-panel" id="reportOptionsPanel">
+            <div class="modal-header">
+                <h2>📄 Report contents</h2>
+                <button class="modal-close" id="reportOptionsClose">✕</button>
+            </div>
+            <div class="modal-content">
+                <div class="rep-presets" id="reportPresets">
+                    <button class="sett-chip" data-preset="all">All</button>
+                    <button class="sett-chip" data-preset="essentials">Essentials</button>
+                    <button class="sett-chip" data-preset="charts">Charts</button>
+                    <button class="sett-chip" data-preset="tables">Tables</button>
+                </div>
+                <div class="rep-grid" id="reportOptionsList"></div>
+                <div class="rep-group" style="margin-top:14px;">Plot resolution</div>
+                <div class="sett-chip-group" id="reportScaleGroup" style="margin-top:6px;">
+                    <button class="sett-chip" data-val="4">Standard<span>×4 · small file</span></button>
+                    <button class="sett-chip" data-val="6">High<span>×6</span></button>
+                    <button class="sett-chip" data-val="10">Max<span>×10 · huge file</span></button>
+                </div>
+                <p class="sett-hint-text" style="margin-top:12px;">Charts are captured from the live plots, so per-plot colours, ranges and windows carry into the report. The disclaimer and references always stay.</p>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" id="reportGenerateBtn" style="flex:1;">📄 Generate report</button>
+                <button class="btn btn-secondary" id="reportOptionsDone" style="flex:1;">Done</button>
+            </div>
+        </div>
+        <div class="modal-overlay" id="reportOptionsOverlay"></div>
+
+        <!-- Per-plot popover (download menu / plot settings) -->
+        <div class="cp" id="chartPopover" role="dialog" aria-modal="false"></div>
 
         <!-- Biofeedback Overlay — full-screen, triggered from mode bar -->
         <div id="biofeedbackOverlay" class="biofeedback-overlay" style="display:none;">
@@ -958,8 +1070,8 @@
         </div>
 
     </div><!-- /.container -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/gridstack@8.4.0/dist/gridstack-all.js"></script>
-    <script src="engine.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/gridstack@8.4.0/dist/gridstack-all.js" defer></script>
+    <script src="engine.js" defer></script>
 </body>
 </html>

@@ -371,7 +371,7 @@ Frequency bands:
 
 Band powers are integrated with the trapezoidal rule (`integrateBandPower()`). This function is used only in the standalone PSD path; the spectrogram uses its own CWT-based integration.
 
-> **Note:** The Lomb-Scargle PSD is currently used only in export metadata and legacy code paths. The spectrogram chart and SRI's LF/HF component use the Morlet CWT pipeline exclusively.
+> **Note:** The Lomb-Scargle PSD functions are currently **not called** by the UI (they are kept as utilities). The spectrogram chart, the LF/HF value and the SRI use the Morlet CWT pipeline exclusively.
 
 ### Frequency Domain — Morlet CWT Spectrogram
 
@@ -678,39 +678,56 @@ CALIBRATION_DURATION = 8000  // ms
 
 ---
 
+## Customisation
+
+Everything below persists automatically in `localStorage` (`cardioTraceSettings`, `theme`, `cardioTraceGridLayout`) and can be moved between devices with **Settings → Backup → Export / Import** (`cardiotrace-settings.json`). **Reset all** returns to factory defaults; saved sessions are never touched.
+
+| Feature | Where | Notes |
+|---|---|---|
+| **Start any protocol at any time** | Record → Protocol → *Change* / *▶ Start* | While recording, choosing a protocol starts it immediately (a running one is replaced after a confirm and a `Protocol switched` marker is written). Chosen before connecting, it auto-starts when calibration ends. *▶ Start* restarts a stopped/finished protocol. |
+| **Per-plot download** | ⬇ on each plot | PNG (white background by default, ×3), SVG, or CSV of the plotted values. |
+| **Per-plot settings** | ⚙ on each plot | Colour, line width / point size, grid, Y axis (default / auto / fixed min–max), time window (all … 30 min), Poincaré ellipse & identity line, spectrogram colour scale. *Reset plot* restores defaults. Phones get a bottom sheet. |
+| **Report contents** | Record → Export → ⚙ next to *Report*, or Settings → Display & Reports | Per-section switches (summary cards, each plot, each table, events, metadata, notes) with *All / Essentials / Charts / Tables* presets. Only selected plots are captured. Plot resolution ×4 (default) / ×6 / ×10. Disclaimer and references always stay. |
+| **Stress Recovery Index on/off** | Settings → Display & Reports | Hides the SRI panel, history/export/summary columns, Analyze trend, monitor window and report parts, and skips the computation. Stored sessions keep any SRI already saved. |
+| **Appearance** | Settings → Appearance | Accent colour (7 presets), theme (Dark / Light / Auto), density (Comfortable / Compact), corner radius, background effects, animations, white background on plot export. |
+
+Implementation notes: accent colours and the corner radius are CSS variables (`--accent-*`, `--accent-rgb`, `--radius`) set by `applyAppearance()`; per-plot preferences live in `appSettings.chartPrefs[key]` (`CHART_META` lists the defaults) and are re-applied by `applyAllChartPrefs()` after every theme change; `reportOn(id)` is the single source of truth for report sections. Live surfaces (charts, stat cards, SRI panel) deliberately have **no `backdrop-filter`** — it is re-blurred on every Plotly repaint.
+
+---
+
 ## Known Bugs & Audit Notes
 
-The following issues have been identified in the codebase and are pending resolution:
+**Status: no open bugs.** All 15 items from the original audit are resolved or were found not to apply to the current code. `engine.js` also passes ESLint (`no-undef`, `no-redeclare`, `no-use-before-define`, `no-unused-vars`) with no implicit globals. Fixes were verified in headless Chromium against a mocked Polar H10 (link drop, calibration, reset, bursty ECG, slow IndexedDB).
 
-### Critical
+### Original audit
 
-| # | Location | Description |
-|---|---|---|
-| 1 | `performSessionReset()` | Sets `calibrationStartTime = Date.now()` instead of `null`; this causes the recording timer and all timestamp calculations to start from a non-null baseline immediately after a reset, even before a new device calibration completes |
-| 2 | `updateStats()` | The `currentTime` reference for the 1-minute rolling window uses the last element of `timestamps[]`, which is correct during live sessions but will silently return stale values if called after a reset where `timestamps` is empty |
-| 3 | `generateMetadataHeader()` | Falls back to the global `timestamps` and `eventMarkers` arrays when `sessionData.sessionTimestamps`/`sessionEventMarkers` are not passed; `downloadSession()` passes these correctly but other call sites may not |
-| 4 | `downloadSession()` | Builds the export filename from `session.startTime` (correct) but the current live session's `exportData()` uses the global `sessionStartTime` instead of `calibrationStartTime`, which can misdate the filename |
-| 5 | History table filters | `historyTableSearch`, `historyTableTagFilter`, `historyTableSortFilter` are only passed to `filterAndSortSessions()` inside `renderHistoryTable()` — the equivalent card-view filter inputs are hard-wired to the sidebar's DOM elements, not the table modal's separate inputs |
+| # | Item | Status | Resolution |
+|---|---|---|---|
+| 1 | `performSessionReset()` set `calibrationStartTime = Date.now()` | ✅ Fixed | Baseline is `null` when nothing is streaming; a live session restarts its axis; a reset during calibration leaves calibration untouched |
+| 2 | `updateStats()` 1-minute window anchored to the last beat | ✅ Fixed | `recentWindowStats(sessionNowSeconds())` — anchored to the live clock; one implementation shared by stats, auto-save and disconnect |
+| 3 | `generateMetadataHeader()` fell back to live arrays | ✅ Fixed | Stored sessions pass their own timestamps/events (two call sites were missing them and wrote the wrong duration); live globals only with `live: true` |
+| 4 | `exportData()` dated files from `sessionStartTime` | ✅ Fixed | Uses `calibrationStartTime \|\| sessionStartTime`, the same baseline as the data |
+| 5 | History table filters not wired | ⬜ Obsolete | The table modal no longer exists; the History-tab table shares the toolbar inputs |
+| 6 | Rolling RMSSD eviction could go negative | ⬜ Not a bug | The `left < i` guard keeps `pairCount ≥ 0` |
+| 7 | `calculateDataQuality()` returned a string | ⬜ Obsolete | Already returns a number |
+| 8 | Stale `lastCWTResult` | ✅ Fixed | Cleared on reset, disconnect and restore; SRI reuses it only within 5 beats |
+| 9 | ECG vs RR time reference | ✅ Fixed | Continuous 130 Hz sample clock on the RR reference (negative during calibration) |
+| 10 | Lomb–Scargle precision with large absolute times | ✅ Fixed | Times are shifted to t₀ = 0 (error 0.8 % → 0.005 % at t ≈ 1.7·10⁹ s) |
+| 11 | Leaked signal-quality `setInterval` | ✅ Fixed | Starts on connect, stops on disconnect |
+| 12 | Touch double-fire on Connect / Mark Event | ⬜ Not present | There are no touch handlers; `click` only |
+| 13 | Table tag filter populated only by `updateHistoryBadge()` | ⬜ Obsolete | One `tagFilter`, refreshed after every save; it now also keeps the user's selection |
+| 14 | Auto-save `startTime` | ✅ Fixed | `calibrationStartTime \|\| sessionStartTime` |
+| 15 | Calibration timeout race on reconnect | ✅ Fixed | The timer handle is stored and cleared on reconnect, reset and disconnect |
 
-### High Severity
+### Also found and fixed
 
-| # | Location | Description |
-|---|---|---|
-| 6 | `updateRollingRMSSD()` | Previously O(n²); now O(n) with the incremental sliding window, but the window-start eviction loop `while (timestamps[left] < windowStart)` does not account for the case where `left` advances past `i`, which could produce negative `pairCount` |
-| 7 | `calculateDataQuality()` | Returns a `string` (via `parseFloat(...toFixed(1))`) — floating-point arithmetic on its return value would coerce correctly in JS, but it creates a type inconsistency with the `number` typed `dataQuality` state variable |
-| 8 | `lastCWTResult` | Not cleared on session reset or disconnect; a stale cached result from the previous session could be used for SRI calculation at the start of a new session if `lastCWTResult.dataLength` accidentally matches the new session's early interval count |
-| 9 | ECG timestamps | `handleECGData()` calculates ECG timestamps from `sessionStartTime` (wall-clock start) whereas RR timestamps use `calibrationStartTime`; the two time references diverge by the calibration period, misaligning the ECG and RR charts' x-axes |
-| 10 | Lomb-Scargle floating point | `lombScarglePeriodogram()` receives raw timestamp values that can be large absolute numbers if called with wall-clock-based times; trigonometric operations `Math.sin/cos(2π·f·t)` on large `t` values accumulate floating-point error |
-| 11 | Signal quality `setInterval` | `setInterval(() => { if (isConnected) updateSignalQuality(); }, 1000)` is started unconditionally at module load and never cleared, leaking a timer for the lifetime of the page |
-| 12 | Mobile double-fire | Touch events on the Mark Event and Connect buttons can fire both `touchstart` and `click`, potentially opening two panels or initiating two connection attempts simultaneously |
+Disconnect button skipped its confirmation · dropped BLE links were never saved · a disconnect during the first auto-save created a duplicate session · ECG samples overlapped under bursty delivery · theme attribute stored as the string `"null"` · mobile 1-column layout overwrote the saved desktop layout · charts redrew while the Record tab was hidden · History / Analyze / Export content clipped on narrow screens · History tag and subject filters reset on every auto-save · tags were inserted into HTML unescaped · `Math.min(...array)` overflow in the Poincaré plot · overlapping SRI animations · `Plotly.update` called with a misplaced argument in the spectrogram · fixed ×10 report resolution (~36 MB files) · unused locals and dead helpers removed.
 
-### Medium Severity
+### Notes (not bugs)
 
-| # | Location | Description |
-|---|---|---|
-| 13 | `historyTableTagFilter` | Options are only populated by `updateHistoryBadge()`, which only populates the sidebar `tagFilter`. The table modal's tag filter receives the same HTML string, but only at the time of `updateHistoryBadge()` — rapid changes may leave it stale |
-| 14 | Auto-save `startTime` | `autoSaveSession()` passes `sessionStartTime` (pre-calibration wall clock) as `startTime` for the session record; the intent is likely `calibrationStartTime` to match what exports use for timestamp offsets |
-| 15 | `calibrationStartTime = null` race | A reconnect within 8 s of disconnecting resets the calibration timer but `calibrationStartTime` may still be set from the previous session; there is no stored timeout handle to cancel the previous calibration `setTimeout` |
+- **Lomb–Scargle PSD is not used by the UI.** `calculatePSD()`, `lombScarglePeriodogram()`, `smoothSpectrum()` and `integrateBandPower()` are kept as tested utilities but nothing calls them: the spectrogram, the LF/HF value and the SRI all use the Morlet CWT. Keep this in mind when describing the software in publications.
+- `const status` shadows the browser's `window.status`; harmless, and left as is because it is used throughout.
+- Other user-supplied text (session names, subject names, annotations) is still inserted into `innerHTML` in several templates. Tags and filter options are escaped via `escapeHTML()`; the rest only affects the local user's own data.
 
 ---
 
@@ -727,7 +744,7 @@ For **export on iOS**, the app falls back to the [Web Share API](https://develop
 The codebase is intentionally framework-free. When adding features, maintain this principle:
 
 - **Keep all logic in `engine.js`** — the separation between structure (`index.html`), presentation (`style.css`), and behaviour (`engine.js`) should remain clean.
-- **No implicit globals** — always `let`/`const` for new state; the `dataQuality` implicit global is a known bug to fix, not a pattern to follow.
+- **No implicit globals** — always `let`/`const` for new state (`engine.js` currently lints clean for `no-undef`).
 - **Throttle chart updates** — all Plotly `update` calls that fire from BLE callbacks must go through `shouldUpdateChart()` or an equivalent guard.
 - **Maintain dual array invariant** — every interval written to `rrIntervals[]` must also exist in `rawRRIntervals[]`; never append to one without the other in the same code path.
 - **Calibration safety** — always check `!isCalibrating && calibrationStartTime` before storing data or computing stats from live BLE events.
