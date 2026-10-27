@@ -1039,7 +1039,8 @@ function computeSessionMetrics(session) {
     if (n === 0) return null;
 
     const mean_rr = rr.reduce((a, b) => a + b, 0) / n;
-    const sdnn    = Math.sqrt(rr.reduce((s, v) => s + (v - mean_rr) ** 2, 0) / n);
+    // SDNN: sample standard deviation (n - 1), as in Kubios HRV and NeuroKit2
+    const sdnn    = n > 1 ? Math.sqrt(rr.reduce((s, v) => s + (v - mean_rr) ** 2, 0) / (n - 1)) : 0;
 
     let rmssd = 0, nn50 = 0;
     if (n > 1) {
@@ -2313,7 +2314,7 @@ function cleanRRData(rrIntervals, timestamps) {
     const cleaned = { rr: [], times: [] };
 
     // Define physiological limits (ms) - MUST MATCH isValidRRInterval
-    const minRR = 250;  // 200 BPM max
+    const minRR = 250;  // 240 BPM max (60000 / 250)
     const maxRR = 2000; // 30 BPM min
     const maxDiff = appSettings.artifactThreshold || 300;
 
@@ -2441,6 +2442,7 @@ const CWT_OMEGA0  = 6;    // rad – Morlet central frequency
 const CWT_VOICES  = 32;   // log-spaced frequency bins
 const CWT_F_MIN   = 0.005;
 const CWT_F_MAX   = 0.40;
+const CWT_C_DELTA = 0.776; // Torrence & Compo (1998), Table 2: reconstruction factor for the Morlet wavelet, omega0 = 6
 
 function nextPow2(n) { let p = 1; while (p < n) p <<= 1; return p; }
 
@@ -2488,6 +2490,27 @@ function interpolateRRUniform(rrMs) {
     // Beat start times (cumulative RR sum, seconds)
     const beatT = new Float64Array(n);
     for (let i = 1; i < n; i++) beatT[i] = beatT[i-1] + rrMs[i-1] / 1000;
+
+    // Monotone cubic (PCHIP, Fritsch-Carlson) interpolation. Linear interpolation of an RR series
+    // low-pass-filters it (about -15 % power at 0.25 Hz for a 70 bpm series), which inflated LF/HF by
+    // roughly 25 % on synthetic signals; cubic interpolation is the convention in Kubios HRV and NeuroKit2.
+    const h = new Float64Array(n - 1), del = new Float64Array(n - 1);
+    for (let k = 0; k < n - 1; k++) { h[k] = beatT[k+1] - beatT[k]; del[k] = h[k] > 0 ? (rrMs[k+1] - rrMs[k]) / h[k] : 0; }
+    const d = new Float64Array(n);
+    for (let k = 1; k < n - 1; k++) {
+        if (del[k-1] * del[k] <= 0) { d[k] = 0; continue; }
+        const w1 = 2 * h[k] + h[k-1], w2 = h[k] + 2 * h[k-1];
+        d[k] = (w1 + w2) / (w1 / del[k-1] + w2 / del[k]);
+    }
+    const endSlope = (h0, h1, d0, d1) => {                        // three-point end condition, shape-preserving
+        let s = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+        if (Math.sign(s) !== Math.sign(d0)) s = 0;
+        else if (Math.sign(d0) !== Math.sign(d1) && Math.abs(s) > 3 * Math.abs(d0)) s = 3 * d0;
+        return s;
+    };
+    d[0]     = endSlope(h[0], h[1], del[0], del[1]);
+    d[n - 1] = endSlope(h[n-2], h[n-3], del[n-2], del[n-3]);
+
     const nSamp = Math.floor(beatT[n-1] * CWT_FS) + 1;
     const sig   = new Float64Array(nSamp);
     const tArr  = new Float64Array(nSamp);
@@ -2496,9 +2519,11 @@ function interpolateRRUniform(rrMs) {
         const t = i / CWT_FS;
         tArr[i] = t;
         while (j < n - 2 && beatT[j+1] <= t) j++;
-        const dT = beatT[j+1] - beatT[j];
-        const a  = dT > 0 ? (t - beatT[j]) / dT : 0;
-        sig[i]  = rrMs[j] + a * (rrMs[j+1] - rrMs[j]);
+        const hj = h[j];
+        if (!(hj > 0)) { sig[i] = rrMs[j]; continue; }
+        const s = (t - beatT[j]) / hj, s2 = s * s, s3 = s2 * s;   // cubic Hermite basis
+        sig[i] = (2*s3 - 3*s2 + 1) * rrMs[j] + (s3 - 2*s2 + s) * hj * d[j]
+               + (-2*s3 + 3*s2) * rrMs[j+1] + (s3 - s2) * hj * d[j+1];
     }
     return { signal: sig, times: tArr };
 }
@@ -2565,24 +2590,27 @@ function computeMorletCWT(rrMs) {
         const pow = new Float64Array(useN);
         let sumP  = 0;
         for (let i = 0; i < useN; i++) {
-            const p = cRe[i] * cRe[i] + cIm[i] * cIm[i];
+            // Scale-rectified power |W|^2 / s (Liu et al. 2007): the unit-energy normalisation of
+            // Torrence & Compo otherwise over-weights low frequencies in the band integrals
+            const p = (cRe[i] * cRe[i] + cIm[i] * cIm[i]) / sSeconds;
             pow[i] = p; sumP += p;
         }
         avgPow[vi] = sumP / useN;
         scalogram.push(pow);
     }
 
-    // Band power integrals (trapezoidal over log-freq axis)
+    // Band variance (ms^2), Torrence & Compo (1998) Eq. 24 restricted to a band and averaged in time:
+    //   var_band = (dj * dt / C_delta) * sum_j [ time-mean |W_j|^2 / s_j ]
+    // dj is the scale spacing in octaves; avgPow already holds |W|^2 / s (rectified above).
+    const dj = Math.log2(CWT_F_MAX / CWT_F_MIN) / (CWT_VOICES - 1);
+    const K  = dj * dt / CWT_C_DELTA;
     let vlfP = 0, lfP = 0, hfP = 0;
     for (let vi = 0; vi < CWT_VOICES; vi++) {
-        const f  = freqs[vi];
-        const p  = avgPow[vi];
-        const df = vi < CWT_VOICES - 1
-            ? freqs[vi+1] - f
-            : (vi > 0 ? f - freqs[vi-1] : f * 0.1);
-        if      (f >= 0.003 && f < 0.04)  vlfP += p * df;
-        else if (f >= 0.04  && f < 0.15)  lfP  += p * df;
-        else if (f >= 0.15  && f <= 0.40) hfP  += p * df;
+        const f = freqs[vi];
+        const p = avgPow[vi] * K;
+        if      (f >= 0.003 && f < 0.04)  vlfP += p;
+        else if (f >= 0.04  && f < 0.15)  lfP  += p;
+        else if (f >= 0.15  && f <= 0.40) hfP  += p;
     }
 
     const totalP  = vlfP + lfP + hfP;
@@ -4364,7 +4392,7 @@ function handleHRData(event) {
 
 // Validate individual RR interval in real-time
 function isValidRRInterval(rr, lastRR = null) {
-    const minRR = 250;  // 200 BPM max
+    const minRR = 250;  // 240 BPM max (60000 / 250)
     const maxRR = 2000; // 30 BPM min
     const maxDiff = appSettings.artifactThreshold || 300;
 
@@ -5091,12 +5119,15 @@ function computePoincareStats(rr) {
     if (rr.length < 2) return null;
     const n = rr.length;
     const mean = rr.reduce((a, b) => a + b) / n;
-    const sdnn = Math.sqrt(rr.reduce((s, v) => s + (v - mean) ** 2, 0) / n);
-    let sqd = 0;
-    for (let i = 1; i < n; i++) sqd += (rr[i] - rr[i-1]) ** 2;
-    const rmssdVal = Math.sqrt(sqd / (n - 1));
-    const sd1 = rmssdVal / Math.SQRT2;
-    const sd2Sq = Math.max(0, 2 * sdnn ** 2 - 0.5 * rmssdVal ** 2);
+    // Standard definitions (Brennan et al. 2001): SD1 = SDSD/sqrt(2); SD2^2 = 2*SDNN^2 - SDSD^2/2,
+    // with SDSD and SDNN the sample standard deviations of successive differences and of the NN series.
+    const sdnn = Math.sqrt(rr.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1));
+    const d = [];
+    for (let i = 1; i < n; i++) d.push(rr[i] - rr[i-1]);
+    const dMean = d.reduce((a, b) => a + b, 0) / d.length;
+    const sdsd = d.length > 1 ? Math.sqrt(d.reduce((s, v) => s + (v - dMean) ** 2, 0) / (d.length - 1)) : 0;
+    const sd1 = sdsd / Math.SQRT2;
+    const sd2Sq = Math.max(0, 2 * sdnn ** 2 - 0.5 * sdsd ** 2);
     const sd2 = Math.sqrt(sd2Sq);
     return {
         sd1: Math.round(sd1 * 10) / 10,
@@ -5185,7 +5216,7 @@ function computeVagalProxy() {
         const w = rrIntervals.slice(lo, i + 1);
         if (w.length < 5) continue;
         const mean = w.reduce((a,b)=>a+b) / w.length;
-        const sdnn = Math.sqrt(w.reduce((s,v)=>s+(v-mean)**2, 0) / w.length);
+        const sdnn = Math.sqrt(w.reduce((s,v)=>s+(v-mean)**2, 0) / (w.length - 1));   // sample SD
         if (sdnn <= 0) continue;
         let ss = 0;
         for (let j = 1; j < w.length; j++) ss += (w[j]-w[j-1])**2;
@@ -5319,7 +5350,7 @@ async function generatePDFReport() {
         const sessionName  = document.getElementById('filename').value || 'polar-h10-data';
 
         const avgRR  = rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length;
-        const sdnn   = Math.sqrt(rrIntervals.reduce((s, rr) => s + Math.pow(rr - avgRR, 2), 0) / rrIntervals.length);
+        const sdnn   = rrIntervals.length > 1 ? Math.sqrt(rrIntervals.reduce((s, rr) => s + Math.pow(rr - avgRR, 2), 0) / (rrIntervals.length - 1)) : 0;   // sample SD
         let   rmssd  = 0;
         let   pnn50  = 0;
         if (rrIntervals.length > 1) {
@@ -6218,11 +6249,13 @@ async function downloadChart(key, fmt) {
 
 // ── Popover (download menu / settings) ───────────────────────────────────
 let _cpOpenFor = null;
+let _cpAnchor = null;
 function closeChartPopover() {
     const pop = document.getElementById('chartPopover');
     pop.classList.remove('open');
     document.querySelectorAll('.chart-tools.is-open').forEach(t => t.classList.remove('is-open'));
     _cpOpenFor = null;
+    _cpAnchor = null;
 }
 function placeChartPopover(anchor) {
     const pop = document.getElementById('chartPopover');
@@ -6243,6 +6276,7 @@ function openChartPopover(key, mode, anchor) {
     pop.classList.add('open');
     anchor.closest('.chart-tools').classList.add('is-open');
     _cpOpenFor = tag;
+    _cpAnchor = anchor;
     placeChartPopover(anchor);
 }
 
@@ -6339,7 +6373,13 @@ function initChartTools() {
     });
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeChartPopover(); });
     window.addEventListener('resize', closeChartPopover);
-    document.addEventListener('scroll', () => { if (_cpOpenFor && window.innerWidth > 600) closeChartPopover(); }, true);
+    // Follow the anchor while the page scrolls (also layout-driven scrolls while a setting is being edited);
+    // close only when the anchor has left the screen.
+    document.addEventListener('scroll', () => {
+        if (!_cpOpenFor || window.innerWidth <= 600 || !_cpAnchor) return;
+        const r = _cpAnchor.getBoundingClientRect();
+        if (r.bottom < 0 || r.top > window.innerHeight) closeChartPopover(); else placeChartPopover(_cpAnchor);
+    }, true);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

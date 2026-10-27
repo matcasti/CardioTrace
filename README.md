@@ -325,7 +325,7 @@ After the calibration period, `calibrationStartTime` is set to `Date.now()`. All
 **Per-beat validation** (`isValidRRInterval()`):
 
 ```
-1. Physiological bounds:  250 ms ≤ RR ≤ 2000 ms  (i.e., 30–200 BPM)
+1. Physiological bounds:  250 ms ≤ RR ≤ 2000 ms  (i.e., 30–240 BPM)
 2. Successive difference:  |RR[i] − RR[i−1]| ≤ artifactThreshold
    Threshold options: 150 ms (Strict) | 300 ms (Moderate, default) | 500 ms (Loose)
 ```
@@ -352,7 +352,7 @@ The dual-array scheme enables:
 |---|---|---|
 | Mean RR | Arithmetic mean of `rrIntervals` | 600–1000 ms |
 | RMSSD | √(Σ(RR[i]−RR[i−1])² / (N−1)) | 20–50 ms |
-| SDNN | √(Σ(RR[i]−mean)² / N) | 50–100 ms |
+| SDNN | √(Σ(RR[i]−mean)² / (N−1)) — sample SD, as in Kubios HRV and NeuroKit2 | 50–100 ms |
 | pNN50 | % of consecutive pairs differing by > 50 ms | > 5–15% |
 
 The **1-minute rolling** RMSSD shown in the stat card and exported header uses only the RR intervals whose timestamps fall within the last 60 s of session time.
@@ -377,16 +377,18 @@ Band powers are integrated with the trapezoidal rule (`integrateBandPower()`). T
 
 `computeMorletCWT()` implements the **Morlet continuous wavelet transform** following Torrence & Compo (1998):
 
-1. **Interpolation** — `interpolateRRUniform()` linearly resamples the non-uniform RR series to a uniform grid at `CWT_FS = 4 Hz` using cumulative beat times as the time axis.
+1. **Interpolation** — `interpolateRRUniform()` resamples the non-uniform RR series to a uniform grid at `CWT_FS = 4 Hz` with **monotone cubic (PCHIP) interpolation**, using cumulative beat times as the time axis. (Linear interpolation low-pass-filters the series and inflated LF/HF by ≈25 % on synthetic signals; see `verification/`.)
 2. **Windowing** — At most the last 1200 samples (~5 min) are used to bound computation.
 3. **Demean** — DC offset is removed before transform.
 4. **Zero-padding** — To the next power-of-2 × 2 to reduce circular wrap-around artifacts.
 5. **FFT** — In-place Cooley-Tukey radix-2 FFT (`fftInPlace()`).
-6. **Wavelet filter** — For each of `CWT_VOICES = 22` log-spaced frequencies (0.005–0.40 Hz), a Morlet wavelet spectrum is computed in the frequency domain. The normalisation factor `√(2π·s/dt) · π^(-1/4)` preserves energy across scales.
+6. **Wavelet filter** — For each of `CWT_VOICES = 32` log-spaced frequencies (0.005–0.40 Hz), a Morlet wavelet spectrum is computed in the frequency domain. The normalisation factor `√(2π·s/dt) · π^(-1/4)` preserves energy across scales.
 7. **IFFT** — Per-voice complex time series retrieved via IFFT.
-8. **Scalogram** — Instantaneous power `|W(s,t)|²` stored per voice per time point.
-9. **Band powers** — Time-averaged power per voice, integrated trapezoidally in frequency over VLF / LF / HF bands.
+8. **Scalogram** — Scale-rectified power `|W(s,t)|² / s` (Liu et al., 2007) stored per voice per time point.
+9. **Band powers** — Band variance in ms² from Torrence & Compo Eq. 24, time-averaged: `var_band = (δj·δt / C_δ) · Σ_j mean_t(|W_j|²/s_j)` with `C_δ = 0.776` (Morlet, ω₀ = 6) and `δj` the scale spacing in octaves. VLF / LF / HF are 0.003–0.04 / 0.04–0.15 / 0.15–0.40 Hz (the lowest analysed frequency is 0.005 Hz).
 10. **LF/HF ratio** — `lfPow / hfPow`.
+
+Accuracy is documented in `verification/` (exact signals: band variances within 1–3 % of the true value; full pipeline on synthetic RR series: LF/HF within +1 to +8 %).
 
 The result is cached in `lastCWTResult` and reused by the SRI calculation within the same heartbeat cycle to avoid redundant computation.
 
@@ -397,9 +399,10 @@ The result is cached in `lastCWTResult` and reused by the SRI calculation within
 `computePoincareStats()` derives SD1 and SD2 from the full RR series:
 
 ```
-SD1 = RMSSD / √2           (short-term, parasympathetic)
-SD2 = √(2·SDNN² − ½·RMSSD²)   (long-term, sympathetic + parasympathetic)
+SD1 = SDSD / √2                (short-term, parasympathetic)
+SD2 = √(2·SDNN² − ½·SDSD²)     (long-term, sympathetic + parasympathetic)
 ```
+with `SDSD` the sample standard deviation of successive differences and `SDNN` the sample standard deviation of the series (Brennan et al., 2001).
 
 `generateEllipseTrace()` draws the 1-SD ellipse in the rotated (45°) coordinate system. The identity line `RR(n) = RR(n+1)` is overlaid as a dashed reference.
 
@@ -660,7 +663,7 @@ CHART_UPDATE_INTERVAL = 100  // ms between allowed chart updates per channel
 // CWT
 CWT_FS      = 4     // Hz — uniform interpolation rate
 CWT_OMEGA0  = 6     // rad — Morlet wavelet central frequency
-CWT_VOICES  = 22    // log-spaced frequency bins
+CWT_VOICES  = 32    // log-spaced frequency bins
 CWT_F_MIN   = 0.005 // Hz
 CWT_F_MAX   = 0.40  // Hz
 
@@ -694,6 +697,23 @@ Everything below persists automatically in `localStorage` (`cardioTraceSettings`
 Implementation notes: accent colours and the corner radius are CSS variables (`--accent-*`, `--accent-rgb`, `--radius`) set by `applyAppearance()`; per-plot preferences live in `appSettings.chartPrefs[key]` (`CHART_META` lists the defaults) and are re-applied by `applyAllChartPrefs()` after every theme change; `reportOn(id)` is the single source of truth for report sections. Live surfaces (charts, stat cards, SRI panel) deliberately have **no `backdrop-filter`** — it is re-blurred on every Plotly repaint.
 
 ---
+
+## Testing and verification
+
+* [`tests/`](tests/README.md) — 39 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
+* [`verification/`](verification/README.md) — numerical cross-check of the HRV indices against NeuroKit2 on a real recording and on synthetic series with a known LF/HF ratio.
+
+### Changes that affect numerical output
+
+These make the indices follow the standard definitions and agree with Kubios HRV / NeuroKit2 (see `verification/`). Values stored in sessions saved with earlier versions are not recomputed.
+
+| Index | Before | Now |
+|---|---|---|
+| SDNN, and SD2 / vagal proxy that use it | population SD (÷ N) | sample SD (÷ N − 1) |
+| Poincaré SD1 | RMSSD / √2 | SDSD / √2 (SDSD = SD of successive differences) |
+| RR resampling for the wavelet transform | linear interpolation (attenuated HF; LF/HF ≈ 25 % too high on synthetic signals) | monotone cubic (PCHIP) interpolation |
+| Wavelet band powers | unit-energy power summed with a frequency step | scale-rectified power with the Torrence & Compo (1998) Eq. 24 weights, in true ms² |
+| LF/HF, band shares, SRI LF/HF component | follow from the two rows above | LF/HF now within +1 to +8 % of the true ratio on synthetic series |
 
 ## Known Bugs & Audit Notes
 

@@ -14,6 +14,14 @@ r_squared <- 1-sum((elitehrv-cardiotrace)^2)/sum((elitehrv-mean(elitehrv))^2)
 rmse <- sqrt(mean((elitehrv-cardiotrace)^2))
 mape <- mean(abs((elitehrv-cardiotrace)/elitehrv)) * 100
 
+## Agreement statistics reported in the text (Bland-Altman style)
+d <- cardiotrace - elitehrv
+bias <- mean(d)
+loa <- bias + c(-1, 1) * 1.96 * sd(d)
+cat(sprintf("n = %d beats | duration = %.1f min | mean RR = %.1f ms\n", length(d), sum(elitehrv)/60000, mean(elitehrv)))
+cat(sprintf("R2 = %.4f | RMSE = %.2f ms | MAPE = %.2f %%\n", r_squared, rmse, mape))
+cat(sprintf("bias = %.2f ms | 95%% LoA = [%.2f, %.2f] ms | max |diff| = %.1f ms\n", bias, loa[1], loa[2], max(abs(d))))
+
 fig1a <- ggplot(data, aes(time)) +
   geom_line(aes(y = elitehrv, col = "EliteHRV"), linewidth = 2, alpha = 0.5) +
   geom_line(aes(y = cardiotrace, col = "CardioTrace")) +
@@ -35,5 +43,5 @@ fig1b <- ggplot(data, aes(elitehrv, cardiotrace, col = "Data point")) +
 
 fig1 <- cowplot::plot_grid(fig1a, fig1b, ncol = 2, axis = "lb", align = "hv")
 
-ggsave("manuscript/figure-2.png", fig1, device = "png", scale = 6, units = "px",
+ggsave("manuscript/figure-3.png", fig1, device = "png", scale = 6, units = "px",
        height = 400, width = 600, dpi = 400)

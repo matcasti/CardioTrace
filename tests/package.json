@@ -1,0 +1,10 @@
+{
+  "name": "cardiotrace-tests",
+  "private": true,
+  "description": "Test-only dependencies: the same library versions the app loads from CDNs, served locally so the tests run offline.",
+  "devDependencies": {
+    "gridstack": "8.4.0",
+    "jszip": "3.10.1",
+    "plotly.js-dist-min": "2.27.0"
+  }
+}

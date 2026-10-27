@@ -1,0 +1,135 @@
+{
+ "A": [
+  {
+   "Index": "Mean NN",
+   "Unit": "ms",
+   "CardioTrace": 634.4437609359107,
+   "NeuroKit2": 634.4437639877924,
+   "Difference": -3.051881662941014e-06,
+   "Difference_%": -4.810326519341021e-07
+  },
+  {
+   "Index": "SDNN",
+   "Unit": "ms",
+   "CardioTrace": 56.32450068629914,
+   "NeuroKit2": 56.32448866970306,
+   "Difference": 1.2016596080854924e-05,
+   "Difference_%": 2.133458530147057e-05
+  },
+  {
+   "Index": "RMSSD",
+   "Unit": "ms",
+   "CardioTrace": 18.19883752453434,
+   "NeuroKit2": 18.19872446348259,
+   "Difference": 0.00011306105174924141,
+   "Difference_%": 0.0006212581105676323
+  },
+  {
+   "Index": "pNN50",
+   "Unit": "%",
+   "CardioTrace": 2.0366598778004072,
+   "NeuroKit2": 2.034587995930824,
+   "Difference": 0.00207188186958307,
+   "Difference_%": 0.10183299389000787
+  },
+  {
+   "Index": "Poincare SD1",
+   "Unit": "ms",
+   "CardioTrace": 12.87507630626387,
+   "NeuroKit2": 12.874996320142095,
+   "Difference": 7.998612177395614e-05,
+   "Difference_%": 0.0006212516088165638
+  },
+  {
+   "Index": "Poincare SD2",
+   "Unit": "ms",
+   "CardioTrace": 78.60744980744323,
+   "NeuroKit2": 78.57447585996051,
+   "Difference": 0.032973947482716426,
+   "Difference_%": 0.04196521468559879
+  }
+ ],
+ "B": [
+  {
+   "Index": "VLF share (%)",
+   "CardioTrace (Morlet CWT)": 26.58127956302017,
+   "NeuroKit2 (Welch)": 17.60693645500277
+  },
+  {
+   "Index": "LF share (%)",
+   "CardioTrace (Morlet CWT)": 68.52799485695634,
+   "NeuroKit2 (Welch)": 77.30105140492094
+  },
+  {
+   "Index": "HF share (%)",
+   "CardioTrace (Morlet CWT)": 4.890725580023492,
+   "NeuroKit2 (Welch)": 5.092012140076269
+  },
+  {
+   "Index": "LF/HF",
+   "CardioTrace (Morlet CWT)": 14.011825798786111,
+   "NeuroKit2 (Welch)": 15.180845857873997
+  }
+ ],
+ "C": [
+  {
+   "true": 0.25,
+   "cwt_mean": 0.2702682969317687,
+   "cwt_err_mean": 8.107318772707476,
+   "cwt_err_sd": 4.434652187504855,
+   "welch_mean": 0.2525528006515463,
+   "welch_err_mean": 1.021120260618511,
+   "welch_err_sd": 6.805365748313319
+  },
+  {
+   "true": 1.0,
+   "cwt_mean": 1.0669418510240072,
+   "cwt_err_mean": 6.694185102400705,
+   "cwt_err_sd": 2.9880828290203616,
+   "welch_mean": 0.9994143879304167,
+   "welch_err_mean": -0.05856120695832754,
+   "welch_err_sd": 5.0407984883266534
+  },
+  {
+   "true": 4.0,
+   "cwt_mean": 4.1870778366076244,
+   "cwt_err_mean": 4.676945915190611,
+   "cwt_err_sd": 2.3754828993786052,
+   "welch_mean": 4.040641219886886,
+   "welch_err_mean": 1.0160304971721668,
+   "welch_err_sd": 3.4321023143241147
+  },
+  {
+   "true": 16.0,
+   "cwt_mean": 16.18967832016974,
+   "cwt_err_mean": 1.1854895010608812,
+   "cwt_err_sd": 2.567162877304609,
+   "welch_mean": 15.87429845476539,
+   "welch_err_mean": -0.7856346577163166,
+   "welch_err_sd": 3.612282852425227
+  }
+ ],
+ "D": [
+  {
+   "mean_rr_ms": 700.0,
+   "cwt_mean": 1.0483687161132633,
+   "cwt_sd": 0.045116043063711433,
+   "welch_mean": 1.0084643713300252,
+   "welch_sd": 0.05016107998992386
+  },
+  {
+   "mean_rr_ms": 850.0,
+   "cwt_mean": 1.0669418510240072,
+   "cwt_sd": 0.02988082829020365,
+   "welch_mean": 0.9994143879304167,
+   "welch_sd": 0.05040798488326657
+  },
+  {
+   "mean_rr_ms": 1000.0,
+   "cwt_mean": 1.1230638852641799,
+   "cwt_sd": 0.04945601119386507,
+   "welch_mean": 1.0673548670447544,
+   "welch_sd": 0.04916715923097543
+  }
+ ]
+}
