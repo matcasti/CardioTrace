@@ -4033,11 +4033,11 @@ async function connect() {
             pmdControlChar.addEventListener('characteristicvaluechanged', handlePMDControlResponse);
             await pmdDataChar.startNotifications();
             pmdDataChar.addEventListener('characteristicvaluechanged', handleECGData);
-            await pmdControlChar.writeValue(new Uint8Array([0x01, 0x00]));
+            await pmdControlChar.writeValueWithResponse(new Uint8Array([0x01, 0x00]));
             setTimeout(async () => {
                 try {
                     const startECG = new Uint8Array([0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00]);
-                    await pmdControlChar.writeValue(startECG);
+                    await pmdControlChar.writeValueWithResponse(startECG);
                 } catch (err) {
                     console.log('ECG streaming not available');
                 }
