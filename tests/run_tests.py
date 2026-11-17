@@ -635,6 +635,80 @@ def edge_cases_final_review(b, base):
     check(p.evaluate("shownSessionId") is None and p.evaluate("rrIntervals.length") == 0, 'deleting the open session closes its view')
     check(not a.errors, f'no errors {a.errors[:1]}'); a.close()
 
+def build_fit(rr_ms, start_unix, big_endian_hrv=False, dev_field=False, compressed=False, with_session=True):
+    """Minimal FIT file per the FIT protocol: file_id, optional session, a record message
+    (optionally via a compressed-timestamp header), and HRV messages of 5 uint16 values each."""
+    import struct
+    fit_t = int(start_unix - 631065600)
+    body = b''
+    # file_id (local 0, global 0): type(0,uint8)=4 activity, time_created(4,uint32)
+    body += bytes([0x40, 0, 0]) + struct.pack('<H', 0) + bytes([2, 0, 1, 0x00, 4, 4, 0x86])
+    body += bytes([0x00, 4]) + struct.pack('<I', fit_t + 3600)      # created 1 h later than the session start
+    if with_session:  # session (local 1, global 18): start_time (2, uint32)
+        body += bytes([0x41, 0, 0]) + struct.pack('<H', 18) + bytes([1, 2, 4, 0x86])
+        body += bytes([0x01]) + struct.pack('<I', fit_t)
+    # record (local 2, global 20): timestamp(253,uint32), heart_rate(3,uint8) [+ developer field of 2 bytes]
+    h = 0x42 | (0x20 if dev_field else 0)
+    body += bytes([h, 0, 0]) + struct.pack('<H', 20) + bytes([2, 253, 4, 0x86, 3, 1, 0x02])
+    if dev_field: body += bytes([1, 0, 2, 0])
+    body += bytes([0x02]) + struct.pack('<I', fit_t) + bytes([70]) + (b'\x07\x07' if dev_field else b'')
+    if compressed:  # compressed-timestamp header for local 2 (time offset 5)
+        body += bytes([0x80 | (2 << 5) | 5]) + struct.pack('<I', fit_t + 1) + bytes([71]) + (b'\x07\x07' if dev_field else b'')
+    # hrv (local 3, global 78): time (0, uint16[5])
+    arch, fmt = (1, '>') if big_endian_hrv else (0, '<')
+    body += bytes([0x43, 0, arch]) + struct.pack(fmt + 'H', 78) + bytes([1, 0, 10, 0x84])
+    vals = list(rr_ms) + [0xFFFF] * ((-len(rr_ms)) % 5)
+    for i in range(0, len(vals), 5):
+        body += bytes([0x03]) + struct.pack(fmt + '5H', *vals[i:i + 5])
+    header = bytes([14, 0x20]) + struct.pack('<H', 2132) + struct.pack('<I', len(body)) + b'.FIT' + b'\x00\x00'
+    return header + body + b'\x00\x00'
+
+@test
+def history_selection_and_fit_import(b, base):
+    "History table: ticked rows can be downloaded / re-cleaned / deleted; Garmin FIT files with HRV data import"
+    a = App(b, base); p = a.open()
+    ids = [p.evaluate(SESSION, {'n': 60, 'name': f'T{i}'}) for i in range(4)]
+    p.evaluate("window.confirm=()=>true; switchTab('history'); openHistoryTable()"); p.wait_for_timeout(500)
+    p.check(f'.row-select[data-id="{ids[0]}"]'); p.check(f'.row-select[data-id="{ids[2]}"]'); p.wait_for_timeout(150)
+    check(not p.evaluate("document.getElementById('historySelectionBar').hidden") and '2 selected' in p.inner_text('#historySelCount'),
+          'ticking rows shows the selection bar with the count')
+    with p.expect_download() as dl:
+        p.click('#histSelDownload')
+    z = zipfile.ZipFile(dl.value.path())
+    check(sorted(n.split('_')[0] for n in z.namelist()) == ['T0', 'T2'], f'Download exports exactly the ticked sessions {z.namelist()}')
+    p.click('#histSelDelete'); p.wait_for_timeout(600)
+    left = sorted(s['filename'] for s in p.evaluate("loadSessions()"))
+    check(left == ['T1', 'T3'] and p.evaluate("document.getElementById('historySelectionBar').hidden"), f'Delete removes only the ticked sessions {left}')
+    p.click('#selectAllRows'); p.wait_for_timeout(150)
+    check('2 selected' in p.inner_text('#historySelCount'), 'header box selects all listed rows')
+
+    import math, time as _t
+    rr = [round(820 + 40 * math.sin(i / 4)) for i in range(97)]
+    start = 1767225600  # 2026-01-01T00:00:00Z
+    files = [('garmin.fit', build_fit(rr, start)),
+             ('garmin_be_dev.fit', build_fit(rr, start, big_endian_hrv=True, dev_field=True, compressed=True)),
+             ('nosession.fit', build_fit(rr, start, with_session=False)),
+             ('nohrv.fit', build_fit([], start))]
+    p.evaluate("document.getElementById('toastHost')?.replaceChildren()")
+    p.set_input_files('#importRRFile', files=[{'name': n, 'mimeType': 'application/octet-stream', 'buffer': c} for n, c in files])
+    p.wait_for_timeout(1500)
+    ss = {s['importedFrom']['filename']: s for s in p.evaluate("loadSessions()") if s.get('importedFrom')}
+    g = ss.get('garmin.fit')
+    check(g and g['rawRRIntervals'] == rr and g['startTime'] == start * 1000 and not g['importedFrom']['startEstimated'],
+          'FIT: all 97 intervals (padding 0xFFFF skipped) and the session start time')
+    o = ss.get('garmin_be_dev.fit')
+    check(o and o['rawRRIntervals'] == rr, 'FIT: big-endian definition, developer fields and compressed timestamps are handled')
+    n = ss.get('nosession.fit')
+    check(n and n['startTime'] == start * 1000, 'FIT without a session message: start from the first record')
+    t = p.evaluate("document.getElementById('toastHost')?.innerText || ''")
+    check('nohrv.fit' in t and 'no beat-to-beat' in t, 'FIT without HRV messages is reported with what to enable')
+    full = build_fit([800 + i % 7 for i in range(400)], start)
+    p.evaluate("document.getElementById('toastHost')?.replaceChildren()")
+    p.set_input_files('#importRRFile', files=[{'name': 'cut.fit', 'mimeType': 'application/octet-stream', 'buffer': full[:len(full) * 3 // 4]}])
+    p.wait_for_timeout(1200)
+    check('TRUNCATED' in p.evaluate("document.getElementById('toastHost')?.innerText || ''"), 'a truncated FIT file imports its data and says it is partial')
+    check(not a.errors, f'no errors {a.errors[:1]}'); a.close()
+
 def main():
     if not os.path.isdir(NM):
         sys.exit('Run `npm install` inside tests/ first (test-only copies of Plotly, GridStack and JSZip).')

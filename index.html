@@ -555,8 +555,8 @@
                             <button class="history-tab active" id="tabCards">◈ Cards</button>
                             <button class="history-tab" id="tabTable">⊞ Table</button>
                         </div>
-                        <button class="btn btn-secondary" id="importRRBtn" title="Import RR intervals from TXT / CSV files (CardioTrace, Kubios, Elite HRV, other apps)">📥 Import</button>
-                        <input type="file" id="importRRFile" accept=".txt,.csv,.tsv,.rr,.hrv,text/plain,text/csv" multiple hidden>
+                        <button class="btn btn-secondary" id="importRRBtn" title="Import RR intervals: TXT / CSV (CardioTrace, Kubios, Elite HRV, other apps) or Garmin .FIT with HRV data">📥 Import</button>
+                        <input type="file" id="importRRFile" accept=".txt,.csv,.tsv,.rr,.hrv,.fit,text/plain,text/csv,application/octet-stream" multiple hidden>
                         <button class="btn btn-accent" id="bulkDownloadBtn">⬇ Download</button>
                         <select id="bulkFormatSelect">
                             <option value="csv">CSV</option>
@@ -575,6 +575,13 @@
                         </div>
                     </div>
                     <div id="historyTableView" style="display:none;">
+                        <div class="history-selection-bar" id="historySelectionBar" hidden>
+                            <span class="history-sel-count" id="historySelCount"></span>
+                            <button class="btn btn-secondary" id="histSelDownload" type="button">⬇ Download</button>
+                            <button class="btn btn-secondary" id="histSelArtifacts" type="button">🧹 Re-clean…</button>
+                            <button class="btn btn-danger" id="histSelDelete" type="button">🗑 Delete</button>
+                            <button class="btn btn-secondary" id="histSelClear" type="button">Clear selection</button>
+                        </div>
                         <div class="history-table-scroll">
                             <table class="history-table" id="historyTable">
                                 <thead>

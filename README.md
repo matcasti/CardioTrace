@@ -219,7 +219,7 @@ The app requests ECG streaming with the byte sequence `[0x02, 0x00, 0x00, 0x01, 
 | Optical / pulse sensor (PPG) recognised by name (Verity Sense, OH1, Scosche Rhythm, Whoop, Garmin / Coros / Amazfit watches…) | Caution notice: pulse-derived intervals are less precise and motion-sensitive |
 | Every recording | `device: { name, source }` stored with the session (`source`: `ecg` — confirmed by an ECG stream or a chest-strap name —, `ppg`, `unknown`); written to the CSV header (`# Device:`), the report and the History card |
 
-The sensor type cannot be read from the standard profile, so `ppg` / `ecg` from a name is an inference; `unknown` is used otherwise. ANT+ and vendor clouds (Garmin Connect…) are not reachable from a browser: for a Garmin watch, export the activity instead (see *Import*; .FIT is not supported yet).
+The sensor type cannot be read from the standard profile, so `ppg` / `ecg` from a name is an inference; `unknown` is used otherwise. ANT+ and vendor clouds (Garmin Connect…) are not reachable from a browser: for a Garmin watch, import the activity's .FIT file (see *Import*).
 
 ### Import
 
@@ -229,6 +229,7 @@ The sensor type cannot be read from the standard profile, so `ppg` / `ecg` from 
 |---|---|
 | CardioTrace CSV (clean or raw) | `Timestamp (s),RR Interval (ms),…` header: time stamps, events (with annotations), name, date, tags, device and calibration are restored — export → import is lossless |
 | One value per line (Elite HRV, Kubios, HRV Logger…) | ms, or seconds when the median is < 10; decimal commas accepted |
+| Garmin / ANT **.FIT** | beat-to-beat intervals of the HRV messages (written when HRV / beat-to-beat logging is on, usually with a chest strap) and the session start time; a dependency-free reader handles both byte orders, developer fields and compressed timestamps; truncated files import their data and are flagged |
 | CSV / TSV / semicolon / space-separated tables (e.g. Kubios text export) | the column named RR / RRI / IBI / NN / PPI / interval, otherwise the first column whose median is a plausible RR and that is not a monotonic time axis; units from the header (`ms`, `s`) or the median |
 
 The file values are stored as the raw stream and cleaned with the same artifact filter as live data; beat times are the cumulative RR sum when the file has none. The start time comes from the file (CardioTrace CSV) or is estimated from the file's modification date (flagged in `importedFrom.startEstimated`). Imports are assigned to the active subject. Files with fewer than 10 values, or whose values are mostly outside 250–2000 ms, are rejected and listed in the summary.
@@ -764,7 +765,7 @@ Implementation notes: accent colours and the corner radius are CSS variables (`-
 
 ## Testing and verification
 
-* [`tests/`](tests/README.md) — 119 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, escaping, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
+* [`tests/`](tests/README.md) — 129 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, escaping, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
 * [`verification/`](verification/README.md) — numerical cross-check of the HRV indices against NeuroKit2 on a real recording and on synthetic series with a known LF/HF ratio.
 
 ### Changes that affect numerical output
@@ -837,7 +838,7 @@ Eight defects were found by a full code review, reproduced in headless Chromium 
 
 Also changed: CSV fields are quoted as in RFC 4180 and events are attached to the nearest beat (previously an event could be written twice or dropped); the five CSV writers share one implementation; settings read from storage or an imported file are range-checked; a failed final save on disconnect is reported to the user; the Comparison view's rolling RMSSD is O(n) instead of O(n²); ZIP entries with equal names no longer overwrite each other and file names contain no `:`; protocol phases must last longer than 0 s.
 
-Known and left as is: the row checkboxes of the History table view have no action attached (bulk download uses the filters).
+The History table's row checkboxes drive a selection bar: download (ZIP), re-clean or delete the ticked sessions (the session being recorded is never deleted).
 
 ### Notes (not bugs)
 

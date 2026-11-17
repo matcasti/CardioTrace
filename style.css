@@ -4568,3 +4568,10 @@ body.no-motion .toast{animation:none}
 .export-actions-footer{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media (min-width:1800px){.export-actions-footer{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media (max-width:760px){.export-actions-footer{grid-template-columns:minmax(0,1fr)}}
+
+/* History table: actions on ticked rows */
+.history-selection-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;margin-bottom:10px;border-radius:12px;
+  border:1px solid rgba(var(--accent-rgb),.4);background:rgba(var(--accent-rgb),.08)}
+.history-selection-bar[hidden]{display:none}
+.history-selection-bar .btn{min-width:0;padding:8px 12px;font-size:12px}
+.history-sel-count{font-weight:700;color:var(--text-primary);margin-right:auto;font-size:13px}

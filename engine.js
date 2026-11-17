@@ -380,6 +380,7 @@ const historyTableBody = document.getElementById('historyTableBody');
 const tabCards = document.getElementById('tabCards');
 const tabTable = document.getElementById('tabTable');
 let currentHistoryView = 'cards'; // 'cards' | 'table'
+let historySelectedIds = new Set();  // rows ticked in the History table (bulk download / re-clean / delete)
 let currentTab = 'record';
 
 function switchTab(tabId) {
@@ -3341,6 +3342,8 @@ async function renderHistory() {
 async function renderHistoryTable() {
     try {
         const sessions = await loadSessions();
+        const existing = new Set(sessions.map(s => s.id));
+        [...historySelectedIds].forEach(id => { if (!existing.has(id)) historySelectedIds.delete(id); });
         const filtered = filterAndSortSessions(sessions);
 
         if (filtered.length === 0) {
@@ -3348,6 +3351,7 @@ async function renderHistoryTable() {
                 <tr><td colspan="12" style="text-align:center; padding:32px; color:var(--text-tertiary);">
                     No sessions found
                 </td></tr>`;
+            updateHistorySelectionBar();
             return;
         }
 
@@ -3360,7 +3364,7 @@ async function renderHistoryTable() {
 
             return `
             <tr class="table-row" data-id="${session.id}">
-                <td><input type="checkbox" class="row-select" data-id="${session.id}"></td>
+                <td><input type="checkbox" class="row-select" data-id="${session.id}" ${historySelectedIds.has(session.id) ? 'checked' : ''}></td>
                 <td class="table-date">${formatDate(session.startTime || session.date)}</td>
                 <td class="table-name">${escapeHTML(session.filename || 'polar-h10-data')}</td>
                 <td>${session.subjectName && session.subjectName !== 'Anonymous' ? `<span class="session-subject-chip">👤 ${escapeHTML(session.subjectName)}</span>` : '<span style="color:var(--text-tertiary)">—</span>'}</td>
@@ -3380,10 +3384,21 @@ async function renderHistoryTable() {
             </tr>`;
         }).join('');
 
-        // Select-all checkbox
-        document.getElementById('selectAllRows').onchange = (e) => {
-            document.querySelectorAll('.row-select').forEach(cb => cb.checked = e.target.checked);
+        // Selection: header box = all listed rows; the bar acts on the ticked rows
+        const allBox = document.getElementById('selectAllRows');
+        allBox.checked = filtered.every(s => historySelectedIds.has(s.id));
+        allBox.onchange = (e) => {
+            filtered.forEach(s => e.target.checked ? historySelectedIds.add(s.id) : historySelectedIds.delete(s.id));
+            historyTableBody.querySelectorAll('.row-select').forEach(cb => cb.checked = e.target.checked);
+            updateHistorySelectionBar();
         };
+        historyTableBody.querySelectorAll('.row-select').forEach(cb => cb.addEventListener('change', () => {
+            const id = parseInt(cb.dataset.id);
+            cb.checked ? historySelectedIds.add(id) : historySelectedIds.delete(id);
+            allBox.checked = filtered.every(s => historySelectedIds.has(s.id));
+            updateHistorySelectionBar();
+        }));
+        updateHistorySelectionBar();
 
         // Row-level buttons
         historyTableBody.querySelectorAll('.tbl-btn.restore').forEach(btn => {
@@ -3531,10 +3546,13 @@ async function downloadSession(id) {
 }
 
 // Bulk download all filtered sessions
-async function bulkDownloadSessions(filterOverrides = {}) {
+async function bulkDownloadSessions(opts = {}) {
+    if (!opts || opts instanceof Event) opts = {};
     const sessions = await loadSessions();
-    const filtered = filterAndSortSessions(sessions, filterOverrides);
-    if (filtered.length === 0) { notify('No sessions match the current filters.', 'warn'); return; }
+    const filtered = opts.ids
+        ? filterAndSortSessions(sessions, { search: '', tag: '', subject: '' }).filter(s => opts.ids.has(s.id))
+        : filterAndSortSessions(sessions, opts);
+    if (filtered.length === 0) { notify(opts.ids ? 'No sessions selected.' : 'No sessions match the current filters.', 'warn'); return; }
 
     const format = bulkFormatSelect.value;
     bulkDownloadBtn.disabled = true;
@@ -3707,6 +3725,70 @@ function parseRRFile(text, fileName = '') {
     return out;
 }
 
+// ── Garmin / ANT FIT files ────────────────────────────────────────────────
+// Minimal reader of the FIT binary format (no library): walks every record, keeps the beat-to-beat intervals of
+// the HRV message (global 78, field 0 "time": uint16 array in ms, 0xFFFF = invalid) and the start time (session
+// start_time, else the first record / file_id time). Handles both byte orders, developer fields and compressed
+// timestamp headers. Garmin writes HRV messages when beat-to-beat / HRV logging is enabled on the device.
+const FIT_EPOCH_MS = Date.UTC(1989, 11, 31);
+function isFitFile(buf) {
+    const b = new Uint8Array(buf, 0, Math.min(12, buf.byteLength));
+    return b.length >= 12 && b[8] === 0x2E && b[9] === 0x46 && b[10] === 0x49 && b[11] === 0x54;   // ".FIT"
+}
+function parseFitFile(buf) {
+    const dv = new DataView(buf);
+    if (!isFitFile(buf)) throw new Error('not a FIT file');
+    const hdr = dv.getUint8(0);
+    const declared = hdr + dv.getUint32(4, true);
+    const truncated = declared > buf.byteLength;                       // copied / downloaded only partly
+    const end = Math.min(buf.byteLength, declared);
+    const defs = {};
+    const rr = [];
+    let sessionStart = null, firstRecordTs = null, fileCreated = null;
+    let off = hdr;
+    while (off < end) {
+        const h = dv.getUint8(off++);
+        let local, isDef = false, hasDev = false;
+        if (h & 0x80) local = (h >> 5) & 0x03;                              // compressed timestamp header (data)
+        else { local = h & 0x0F; isDef = !!(h & 0x40); hasDev = !!(h & 0x20); }
+        if (isDef) {
+            if (off + 5 > end) break;
+            const le = dv.getUint8(off + 1) === 0;
+            const global = dv.getUint16(off + 2, le);
+            const nf = dv.getUint8(off + 4);
+            off += 5;
+            const fields = [];
+            for (let i = 0; i < nf; i++, off += 3) fields.push({ num: dv.getUint8(off), size: dv.getUint8(off + 1) });
+            let devBytes = 0;
+            if (hasDev) { const nd = dv.getUint8(off++); for (let i = 0; i < nd; i++, off += 3) devBytes += dv.getUint8(off + 1); }
+            defs[local] = { le, global, fields, devBytes };
+            continue;
+        }
+        const d = defs[local];
+        if (!d) throw new Error('corrupt FIT file (data before its definition)');
+        let p = off;
+        for (const f of d.fields) {
+            if (p + f.size > end) break;
+            if (d.global === 78 && f.num === 0) {
+                for (let k = 0; k + 1 < f.size; k += 2) { const v = dv.getUint16(p + k, d.le); if (v !== 0xFFFF && v > 0) rr.push(v); }
+            } else if (f.size === 4 && ((d.global === 18 && f.num === 2) || (d.global === 20 && f.num === 253) || (d.global === 0 && f.num === 4))) {
+                const t = dv.getUint32(p, d.le);
+                if (t !== 0xFFFFFFFF && t > 0) {
+                    const ms = FIT_EPOCH_MS + t * 1000;
+                    if (d.global === 18 && sessionStart === null) sessionStart = ms;
+                    else if (d.global === 20 && firstRecordTs === null) firstRecordTs = ms;
+                    else if (d.global === 0 && fileCreated === null) fileCreated = ms;
+                }
+            }
+            p += f.size;
+        }
+        off += d.fields.reduce((a, f) => a + f.size, 0) + d.devBytes;
+    }
+    if (!rr.length) throw new Error('this FIT file has no beat-to-beat (HRV) data — enable HRV / beat-to-beat logging on the device and record with a chest strap');
+    return { rr, times: null, events: [], name: null, tags: [], startTime: sessionStart ?? firstRecordTs ?? fileCreated,
+             calibrationSecs: null, device: null, format: `Garmin FIT (HRV messages)${truncated ? ' — TRUNCATED file, partial data' : ''}` };
+}
+
 // Build the stored-session record of one parsed file (pure: no globals except the active subject)
 function buildImportedSession(parsed, file) {
     const raw = parsed.rr;
@@ -3745,7 +3827,10 @@ async function importRRFiles(fileList) {
     const lines = [];
     for (const file of files) {
         try {
-            const parsed = parseRRFile(await file.text(), file.name);
+            const buf = await file.arrayBuffer();
+            const parsed = (/\.fit$/i.test(file.name || '') || isFitFile(buf))
+                ? parseFitFile(buf)
+                : parseRRFile(new TextDecoder().decode(buf), file.name);
             const rec = buildImportedSession(parsed, file);
             await saveSession(rec);
             const q = rec.rawRRIntervals.length ? Math.round(rec.rrIntervals.length / rec.rawRRIntervals.length * 1000) / 10 : 0;
@@ -4016,7 +4101,7 @@ eventTypeOverlay.addEventListener('click', closeEventTypePanel);
 addEventBtn.addEventListener('click', addEventMarker);
 addTagBtn.addEventListener('click', addTag);
 clearAllBtn.addEventListener('click', clearAllSessions);
-bulkDownloadBtn.addEventListener('click', bulkDownloadSessions);
+bulkDownloadBtn.addEventListener('click', () => bulkDownloadSessions());
 document.getElementById('importRRBtn')?.addEventListener('click', () => document.getElementById('importRRFile').click());
 document.getElementById('importRRFile')?.addEventListener('change', async e => {
     const files = Array.from(e.target.files || []);
@@ -7492,6 +7577,36 @@ function initSessionBanner() {
     updateSessionBanner();
 }
 
+// ── History table selection bar ─────────────────────────────────────────
+function updateHistorySelectionBar() {
+    const bar = document.getElementById('historySelectionBar');
+    if (!bar) return;
+    const n = historySelectedIds.size;
+    bar.hidden = n === 0;
+    document.getElementById('historySelCount').textContent = `${n} selected`;
+}
+async function deleteSelectedHistorySessions() {
+    const ids = [...historySelectedIds];
+    const live = ids.filter(id => isLiveSession(id));
+    const del = ids.filter(id => !isLiveSession(id));
+    if (!del.length) { notify('The selected session is being recorded. Disconnect first, then delete it.', 'warn'); return; }
+    if (!confirm(`Delete ${del.length} session(s)? This cannot be undone.` + (live.length ? '\n(The session being recorded is kept.)' : ''))) return;
+    for (const id of del) await deleteSession(id);
+    del.forEach(id => historySelectedIds.delete(id));
+    if (!isConnected && del.includes(shownSessionId)) await performSessionReset(false);
+    await renderHistoryTable();
+    await updateHistoryBadge();
+    notify(`Deleted ${del.length} session(s)`, 'success');
+}
+function initHistorySelection() {
+    document.getElementById('histSelDownload')?.addEventListener('click', () => bulkDownloadSessions({ ids: new Set(historySelectedIds) }));
+    document.getElementById('histSelArtifacts')?.addEventListener('click', () => {
+        if (historySelectedIds.size) openArtifactPanel({ kind: 'batch', ids: [...historySelectedIds] });
+    });
+    document.getElementById('histSelDelete')?.addEventListener('click', deleteSelectedHistorySessions);
+    document.getElementById('histSelClear')?.addEventListener('click', () => { historySelectedIds.clear(); renderHistoryTable(); });
+}
+
 // Initialize on page load
 (async () => {
     try {
@@ -7502,6 +7617,7 @@ function initSessionBanner() {
         initReportOptions();
         initArtifactPanel();
         initSessionBanner();
+        initHistorySelection();
 
         try {
             await initDB();
