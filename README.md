@@ -229,7 +229,7 @@ The sensor type cannot be read from the standard profile, so `ppg` / `ecg` from 
 |---|---|
 | CardioTrace CSV (clean or raw) | `Timestamp (s),RR Interval (ms),…` header: time stamps, events (with annotations), name, date, tags, device and calibration are restored — export → import is lossless |
 | One value per line (Elite HRV, Kubios, HRV Logger…) | ms, or seconds when the median is < 10; decimal commas accepted |
-| CSV / TSV / semicolon tables | the column named RR / RRI / IBI / NN / PPI / interval, otherwise the first column whose median is a plausible RR and that is not a monotonic time axis; units from the header (`ms`, `s`) or the median |
+| CSV / TSV / semicolon / space-separated tables (e.g. Kubios text export) | the column named RR / RRI / IBI / NN / PPI / interval, otherwise the first column whose median is a plausible RR and that is not a monotonic time axis; units from the header (`ms`, `s`) or the median |
 
 The file values are stored as the raw stream and cleaned with the same artifact filter as live data; beat times are the cumulative RR sum when the file has none. The start time comes from the file (CardioTrace CSV) or is estimated from the file's modification date (flagged in `importedFrom.startEstimated`). Imports are assigned to the active subject. Files with fewer than 10 values, or whose values are mostly outside 250–2000 ms, are rejected and listed in the summary.
 
@@ -388,6 +388,8 @@ Intervals that pass validation go into `rrIntervals[]` / `timestamps[]`.
 **Correction** (retrospective): *Removed* drops the flagged intervals (both intervals of an ectopic or extra beat); *Corrected* replaces them by linear interpolation in time (per-beat methods) or, for the automatic method, merges extra beats, splits missed beats and moves ectopic / long-short beats to the midpoint of their neighbours (NeuroKit2's Kubios correction), which preserves the total duration. Live recordings always remove (a beat cannot wait for its successor).
 
 **Where:** *Settings → Artifact Rejection* (Δ chips, or *More methods…*) chooses the live method; it is **fixed when a recording starts** and stored with the session (`artifactFilter`), so one session never mixes two criteria. The 🧹 button in *Record → Export Data* opens the panel for the session shown (preview of raw vs. clean with flagged beats; *Apply* re-cleans the stored session), and *Export → 🧹 Artifacts…* re-cleans all selected sessions. The raw stream is never modified, so a session can be re-cleaned any number of times. The filter is written to the CSV header (`# Artifact Filter:`), the report and the History card.
+
+**Robustness:** non-finite or non-positive intervals are flagged and excluded before the automatic method runs; raw time stamps that are missing, non-finite or decreasing are rebuilt from the cumulative RR sum; rolling quantiles use a sorted sliding window (60 000 beats ≈ 0.1 s). Retrospective settings read from storage or an imported settings file are validated.
 
 The automatic method is a line-by-line port of NeuroKit2 0.2.13 (`signal_fixpeaks(method="kubios")`); `verification/compare_artifacts.py` checks that the detections are identical and the corrected peaks agree within one sample.
 All post-calibration intervals (pass or fail) go into `rawRRIntervals[]` / `rawTimestamps[]`.
@@ -762,7 +764,7 @@ Implementation notes: accent colours and the corner radius are CSS variables (`-
 
 ## Testing and verification
 
-* [`tests/`](tests/README.md) — 112 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, escaping, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
+* [`tests/`](tests/README.md) — 119 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, escaping, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
 * [`verification/`](verification/README.md) — numerical cross-check of the HRV indices against NeuroKit2 on a real recording and on synthetic series with a known LF/HF ratio.
 
 ### Changes that affect numerical output

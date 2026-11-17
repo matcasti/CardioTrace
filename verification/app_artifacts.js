@@ -12,7 +12,7 @@ function grab(name) {
     }
     throw new Error(`unbalanced braces in ${name}`);
 }
-const names = ['_median', '_rollingCentered', '_quantileLinear', '_lipponenThreshold', 'lipponenFindArtifacts',
+const names = ['_median', '_rollingQuantiles', '_lipponenThreshold', 'lipponenFindArtifacts',
                '_updateIdx', 'lipponenCorrectPeaks', 'lipponenFixPeaks'];
 const ctx = { Math, Float64Array, Array, Number, Set, console };
 vm.createContext(ctx);

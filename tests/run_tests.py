@@ -603,6 +603,38 @@ def ux_context_and_navigation(b, base):
     check(len(a.dialogs) == n0 and 'No data' in p.inner_text('#toastHost'), 'messages are non-blocking toasts, not alert dialogs')
     check(not a.errors, f'no errors {a.errors[:1]}'); a.close()
 
+@test
+def edge_cases_final_review(b, base):
+    "Degenerate series, invalid values, inconsistent times, long recordings, odd files and settings, stale views"
+    a = App(b, base, settings={'artifactRetro': {'method': 'xyz', 'correction': 'zzz', 'percent': 'abc', 'level': 'nope'}}); p = a.open()
+    bad = p.evaluate("""()=>{ const cases = { empty:[[],[]], one:[[800],[1]], four:[[800,810,790,805],[1,2,3,4]],
+        constant:[new Array(200).fill(800), Array.from({length:200},(_,i)=>i*.8)], allOut:[new Array(50).fill(3000), Array.from({length:50},(_,i)=>i*3)],
+        invalid:[[800,NaN,810,Infinity,790,0,805,800,800,800,800,800], Array.from({length:12},(_,i)=>i)],
+        shortTimes:[new Array(100).fill(800).map((v,i)=>v+(i%7)*9), Array.from({length:60},(_,i)=>i*.8)] };
+      const cfgs = ['delta','percent','median','lipponen'].flatMap(m => ['remove','interpolate'].map(c => ({method:m, correction:c, deltaMs:300, percent:20, level:'medium', centered:m==='median'})));
+      const out = [];
+      for (const [k,[rr,ts]] of Object.entries(cases)) for (const c of cfgs) {
+        try { const r = applyArtifactCorrection(rr, ts, c);
+          if (r.rr.some(v=>!isFinite(v) || v<=0) || r.times.some(v=>!isFinite(v)) || r.rr.length !== r.times.length) out.push(k+'/'+c.method+'/'+c.correction); }
+        catch(e) { out.push(k+'/'+c.method+'/'+c.correction+': '+e.message); } }
+      return out; }""")
+    check(not bad, f'every method returns finite, consistent series for degenerate / invalid input {bad[:3]}')
+    ms = p.evaluate("""()=>{ const n=60000, rr=[], ts=[]; let t=0; for (let i=0;i<n;i++){ let v=850+40*Math.sin(i/6); if(i%2===0&&i%10<4) v=2500; t+=v/1000; rr.push(v); ts.push(t); }
+        const t0=performance.now(); applyArtifactCorrection(rr,ts,{method:'lipponen',correction:'interpolate'}); return performance.now()-t0; }""")
+    check(ms < 1500, f'automatic correction of 60 000 beats is interactive ({ms:.0f} ms)')
+    check(p.evaluate("artPanelCfg().method") == 'lipponen' and p.evaluate("artPanelCfg().correction") == 'interpolate', 'corrupted retrospective settings fall back to defaults')
+    _import(p, [('k.txt', '\n'.join(f'{(i+1)*0.8:.3f}   {(800 + i % 9 * 7)/1000:.3f}' for i in range(80)))])
+    check('✓ k.txt' in p.evaluate("document.getElementById('toastHost')?.innerText || ''"), 'space-separated columns (Kubios text export) import')
+    r = p.evaluate("""async()=>{ const rr=Array.from({length:120},(_,i)=>800+(i%5)*10);
+        const id=await saveSession({startTime:Date.now(),filename:'mm',rrIntervals:rr,timestamps:rr.map((_,i)=>i*.8),rawRRIntervals:rr,rawTimestamps:rr.slice(0,90).map((_,i)=>i*.8),eventMarkers:[],sri:0});
+        await reprocessSession(id,{method:'lipponen',correction:'interpolate'}); const s=await loadSession(id); return s.timestamps.every(isFinite) && s.timestamps.length===s.rrIntervals.length; }""")
+    check(r, 're-cleaning a session with inconsistent raw time stamps stores valid times')
+    sid = p.evaluate(SESSION, {'n': 60, 'name': 'shown'})
+    p.evaluate(f"restoreSession({sid})"); p.wait_for_timeout(600)
+    p.evaluate("window.confirm=()=>true"); p.evaluate(f"confirmAndDeleteSession({sid})"); p.wait_for_timeout(400)
+    check(p.evaluate("shownSessionId") is None and p.evaluate("rrIntervals.length") == 0, 'deleting the open session closes its view')
+    check(not a.errors, f'no errors {a.errors[:1]}'); a.close()
+
 def main():
     if not os.path.isdir(NM):
         sys.exit('Run `npm install` inside tests/ first (test-only copies of Plotly, GridStack and JSZip).')

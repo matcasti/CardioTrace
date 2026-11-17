@@ -21,6 +21,7 @@ python run_tests.py                  # exit code 0 = all checks passed
 | Other RR sources | device name and sensor type stored and exported; notices for HR-only devices, missing ECG and pulse-derived (PPG) data; import of one-value-per-line files (ms, s, decimal comma), CSV / TSV tables and CardioTrace CSV (lossless round trip); invalid files reported |
 | Artifact options | live % and running-median methods; the filter is fixed per recording and stored / exported; retrospective Δ, %, centred-median and automatic (Lipponen & Tarvainen) methods flag injected ectopic beats; correction preserves duration; panel preview, apply to the shown session, batch re-clean from Export, reversible; the live session cannot be re-cleaned |
 | Interface | get-started guide when empty; saved-session banner with Close (no confirmation); Open buttons in History; no "0" badge; Export select-all enables bulk actions; messages are toasts, not alert dialogs |
+| Edge cases | every artifact method on empty, 1- and 4-beat, constant, all-out-of-range, NaN / ∞ / 0 and time-mismatched series; 60 000-beat automatic correction under 1.5 s; corrupted retrospective settings; space-separated imports; re-cleaning with inconsistent raw times; deleting the open session |
 | Layout | no clipped or overflowing content on any of the five tabs at ten viewport sizes from 240 px to 3440 px |
 
 The tests use only the browser; the numerical accuracy of the HRV indices is checked separately in

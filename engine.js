@@ -82,7 +82,16 @@ function mergeSettings(p) {
     if (!['delta', 'percent', 'median'].includes(m.artifactMethod)) m.artifactMethod = 'delta';
     m.artifactPercent   = clampNum(m.artifactPercent, 5, 50, DEFAULT_SETTINGS.artifactPercent);
     if (!['vlow', 'low', 'medium', 'strong', 'vstrong'].includes(m.artifactMedianLevel)) m.artifactMedianLevel = 'medium';
-    m.artifactRetro = { ...DEFAULT_SETTINGS.artifactRetro, ...((p.artifactRetro && typeof p.artifactRetro === 'object') ? p.artifactRetro : {}) };
+    const ar = { ...DEFAULT_SETTINGS.artifactRetro, ...((p.artifactRetro && typeof p.artifactRetro === 'object') ? p.artifactRetro : {}) };
+    const dr = DEFAULT_SETTINGS.artifactRetro;
+    m.artifactRetro = {
+        method:     ['delta', 'percent', 'median', 'lipponen'].includes(ar.method) ? ar.method : dr.method,
+        correction: ['remove', 'interpolate'].includes(ar.correction) ? ar.correction : dr.correction,
+        deltaMs:    clampNum(ar.deltaMs, 50, 1000, dr.deltaMs),
+        percent:    clampNum(ar.percent, 5, 50, dr.percent),
+        level:      ['vlow', 'low', 'medium', 'strong', 'vstrong'].includes(ar.level) ? ar.level : dr.level,
+        iterative:  ar.iterative !== false
+    };
     m.report.scale      = clampNum(m.report.scale, 1, 10, 4);
     return m;
 }
@@ -2968,6 +2977,7 @@ async function confirmAndDeleteSession(id) {
     if (isLiveSession(id)) { notify('This session is being recorded. Disconnect first, then delete it.', 'warn'); return false; }
     if (!confirm('Delete this session?')) return false;
     await deleteSession(id);
+    if (!isConnected && id === shownSessionId) await performSessionReset(false);   // the open session no longer exists
     return true;
 }
 
@@ -2999,6 +3009,7 @@ async function clearAllSessions() {
             objectStore.clear();
         }
         transaction.oncomplete = () => {
+            if (!isConnected && shownSessionId != null) performSessionReset(false);
             renderHistory();
             updateHistoryBadge();
             console.log('✓ All sessions cleared');
@@ -3398,6 +3409,11 @@ async function renderHistoryTable() {
                 const newName = prompt('Rename session:', session.filename || 'polar-h10-data');
                 if (newName !== null && newName.trim()) {
                     await updateSession(id, { filename: newName.trim() });
+                    if (id === shownSessionId && shownSessionMeta) {
+                        shownSessionMeta.name = newName.trim();
+                        document.getElementById('filename').value = newName.trim();
+                        updateSessionBanner();
+                    }
                     await renderHistoryTable();
                 }
             });
@@ -3649,6 +3665,11 @@ function parseRRFile(text, fileName = '') {
         for (const d of ['\t', ';', ',']) {
             const n = sample.filter(l => l.includes(d)).length;
             if (n >= Math.max(1, sample.length * 0.8)) { delim = d; break; }
+        }
+        // Columns separated by spaces (e.g. Kubios text exports): normalise to tabs
+        if (!delim && numericSample.filter(l => /\S\s+\S/.test(l)).length >= Math.max(1, numericSample.length * 0.8)) {
+            delim = '\t';
+            for (let k = 0; k < lines.length; k++) lines[k] = lines[k].replace(/\s+/g, '\t');
         }
     }
     let values = [], colName = '';
@@ -4834,21 +4855,27 @@ function describeArtifactCfg(cfg) {
 // ── Lipponen & Tarvainen (2019), as implemented in NeuroKit2 0.2.13 (signal_fixpeaks, method "kubios") ──
 // Mirrors NeuroKit2 step by step (same constants, rolling windows, reflect padding and flow control) so the
 // detections can be checked against it (verification/compare_artifacts.py). Peaks in ms; indices are peak indices.
-function _rollingCentered(x, w, fn) {
-    const n = x.length, h = (w - 1) >> 1, out = new Float64Array(n);
-    for (let k = 0; k < n; k++) out[k] = fn(x.slice(Math.max(0, k - h), Math.min(n, k + h + 1)).filter(v => !Number.isNaN(v)));
+// Centred rolling quantiles (pandas: center=True, min_periods=1, linear interpolation, NaN ignored), several
+// quantiles in one pass over a sorted sliding window: O(n·w) instead of sorting every window (O(n·w·log w)).
+function _rollingQuantiles(x, w, qs) {
+    const n = x.length, h = (w - 1) >> 1, win = [];
+    const out = qs.map(() => new Float64Array(n));
+    const ins = v => { if (Number.isNaN(v)) return; let lo = 0, hi = win.length; while (lo < hi) { const m = (lo + hi) >> 1; if (win[m] < v) lo = m + 1; else hi = m; } win.splice(lo, 0, v); };
+    const del = v => { if (Number.isNaN(v)) return; let lo = 0, hi = win.length; while (lo < hi) { const m = (lo + hi) >> 1; if (win[m] < v) lo = m + 1; else hi = m; } win.splice(lo, 1); };
+    for (let k = 0; k <= Math.min(h, n - 1); k++) ins(x[k]);
+    for (let k = 0; k < n; k++) {
+        if (k > 0) { if (k + h < n) ins(x[k + h]); if (k - h - 1 >= 0) del(x[k - h - 1]); }
+        const m = win.length;
+        qs.forEach((q, qi) => {
+            if (!m) { out[qi][k] = NaN; return; }
+            const pos = q * (m - 1), lo = Math.floor(pos), fr = pos - lo;
+            out[qi][k] = lo + 1 < m ? win[lo] + (win[lo + 1] - win[lo]) * fr : win[lo];
+        });
+    }
     return out;
 }
-function _quantileLinear(a, q) {                       // pandas / numpy 'linear' interpolation
-    const b = Array.from(a).sort((x, y) => x - y), n = b.length;
-    if (!n) return NaN;
-    const pos = q * (n - 1), lo = Math.floor(pos), fr = pos - lo;
-    return lo + 1 < n ? b[lo] + (b[lo + 1] - b[lo]) * fr : b[lo];
-}
 function _lipponenThreshold(sig, alpha, w) {
-    const abs = Array.from(sig, Math.abs);
-    const q1 = _rollingCentered(abs, w, a => _quantileLinear(a, 0.25));
-    const q3 = _rollingCentered(abs, w, a => _quantileLinear(a, 0.75));
+    const [q1, q3] = _rollingQuantiles(Array.from(sig, Math.abs), w, [0.25, 0.75]);
     return Array.from(q1, (v, k) => alpha * ((q3[k] - v) / 2));
 }
 function lipponenFindArtifacts(peaks, opt = {}) {
@@ -4873,7 +4900,7 @@ function lipponenFindArtifacts(peaks, opt = {}) {
         if (v > 0) s12[d - pad] = nmax(P(d - 1), P(d + 1)); else if (v < 0) s12[d - pad] = nmin(P(d - 1), P(d + 1));
         if (v >= 0) s22[d - pad] = nmin(P(d + 1), P(d + 2)); else if (v < 0) s22[d - pad] = nmax(P(d + 1), P(d + 2));
     }
-    const medrr = _rollingCentered(Array.from(rr), mo, _median);
+    const [medrr] = _rollingQuantiles(Array.from(rr), mo, [0.5]);
     const mrrs = new Float64Array(n);
     for (let k = 0; k < n; k++) { const m = rr[k] - medrr[k]; mrrs[k] = m < 0 ? m * 2 : m; }
     const th2 = _lipponenThreshold(mrrs, alpha, ww);
@@ -4955,6 +4982,28 @@ function lipponenFixPeaks(peaks, iterative = true) {
 // ── Retrospective cleaning of a whole raw series ──────────────────────────
 // Returns { rr, times, flagged (raw indices), counts, cfg } — the raw series itself is never modified.
 function applyArtifactCorrection(rawRR, rawTimes, cfg) {
+    // Times must be one finite, non-decreasing value per beat; otherwise (inconsistent stored data) rebuild them
+    // from the cumulative RR sum so no NaN can reach the clean series.
+    let timesOk = rawTimes && rawTimes.length === rawRR.length;
+    for (let k = 0; timesOk && k < rawRR.length; k++) if (!isFinite(rawTimes[k]) || (k && rawTimes[k] < rawTimes[k - 1])) timesOk = false;
+    if (!timesOk) {
+        rawTimes = []; let acc = 0;
+        for (const v of rawRR) { if (isFinite(v) && v > 0) acc += v / 1000; rawTimes.push(Math.round(acc * 1000) / 1000); }
+    }
+    // The automatic method works on beat positions: non-finite or non-positive values cannot be placed.
+    // They are flagged as artifacts and the method runs on the remaining beats.
+    if (cfg.method === 'lipponen') {
+        const keep = [];
+        for (let k = 0; k < rawRR.length; k++) if (isFinite(rawRR[k]) && rawRR[k] > 0) keep.push(k);
+        if (keep.length < rawRR.length) {
+            const sub = applyArtifactCorrection(keep.map(k => rawRR[k]), keep.map(k => rawTimes[k]), cfg);
+            const dropped = []; let j = 0;
+            for (let k = 0; k < rawRR.length; k++) { if (keep[j] === k) j++; else dropped.push(k); }
+            sub.flagged = [...dropped, ...sub.flagged.map(i => keep[i])].sort((a, b) => a - b);
+            sub.counts = { ...sub.counts, invalid: dropped.length };
+            return sub;
+        }
+    }
     const n = rawRR.length;
     const res = { rr: [], times: [], flagged: [], counts: {}, cfg: { ...cfg } };
     if (!n) return res;
@@ -5013,13 +5062,13 @@ function applyArtifactCorrection(rawRR, rawTimes, cfg) {
     if (cfg.correction === 'interpolate') {
         const gi = []; for (let k = 0; k < n; k++) if (good[k]) gi.push(k);
         if (!gi.length) return res;
-        let g = 0;
+        let g = 0;                                   // gi[g] = first good beat at or after k
         for (let k = 0; k < n; k++) {
             let v = rawRR[k];
+            while (g < gi.length && gi[g] < k) g++;
             if (!good[k]) {
-                while (g + 1 < gi.length && gi[g + 1] < k) g++;
-                const a = gi[g] < k ? gi[g] : null;
-                const b = gi.find(x => x > k) ?? null;   // next good beat
+                const a = g > 0 ? gi[g - 1] : null;      // previous good beat
+                const b = g < gi.length ? gi[g] : null;  // next good beat
                 if (a === null) v = rawRR[b];
                 else if (b === null) v = rawRR[a];
                 else { const dt = rawTimes[b] - rawTimes[a]; v = dt > 0 ? rawRR[a] + (rawRR[b] - rawRR[a]) * (rawTimes[k] - rawTimes[a]) / dt : (rawRR[a] + rawRR[b]) / 2; }
