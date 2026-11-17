@@ -322,13 +322,21 @@ When the device connects, a **calibration period** begins immediately (default 8
 
 After the calibration period, `calibrationStartTime` is set to `Date.now()`. All subsequent timestamps are calculated as `(Date.now() - calibrationStartTime) / 1000` seconds. This baseline is used consistently across all stats calculations, chart time axes, event markers, exports, and auto-saves.
 
-**Per-beat validation** (`isValidRRInterval()`):
+**Per-beat validation** (`rrFilterStep()`, shared by the live stream and by `cleanRRData()`):
 
 ```
 1. Physiological bounds:  250 ms ≤ RR ≤ 2000 ms  (i.e., 30–240 BPM)
-2. Successive difference:  |RR[i] − RR[i−1]| ≤ artifactThreshold
+2. Successive difference:  |RR[i] − last accepted RR| ≤ artifactThreshold
    Threshold options: 150 ms (Strict) | 300 ms (Moderate, default) | 500 ms (Loose)
+3. Re-anchoring:  REANCHOR_BEATS (= 3) consecutive in-range intervals that fail rule 2 but agree
+   with each other within the threshold are all accepted and become the new reference
 ```
+
+Rule 3 prevents a lock-out: with rules 1–2 alone, a single plausible-but-wrong accepted interval (e.g. 1500 ms
+right after calibration) made every following normal beat fail rule 2 for the rest of the session. Isolated
+ectopic beats (short–long pairs) never form a consistent run and are still rejected. On the two-strap
+recording in `manuscript/raw_data/` (1002 intervals) rules 1–3 give exactly the same clean series as rules 1–2
+at all three thresholds.
 
 Intervals that pass validation go into `rrIntervals[]` / `timestamps[]`.
 All post-calibration intervals (pass or fail) go into `rawRRIntervals[]` / `rawTimestamps[]`.
@@ -507,7 +515,7 @@ The CSV file consists of a **metadata header block** (lines starting with `#`) f
 # Total RR Intervals: <N>
 # Valid Intervals: <N> (<quality %>)
 # Removed Artifacts: <N>
-# Calibration Period: 8 seconds (excluded from data)
+# Calibration Period: <N> seconds (excluded from data)   ← value used for that recording; "not recorded" for sessions saved before 2026-11
 # Total Events: <N>
 # Event Types: <comma-separated list>
 ```
@@ -518,8 +526,9 @@ The CSV file consists of a **metadata header block** (lines starting with `#`) f
 Timestamp (s), RR Interval (ms), Event Type, Annotation
 ```
 
-- `Timestamp` — seconds since `calibrationStartTime` (i.e., session-relative, not wall clock)
-- Commas inside annotations are escaped to semicolons to preserve CSV structure
+- `Timestamp` — seconds since `calibrationStartTime` (i.e., session-relative, not wall clock). The last interval of each Bluetooth notification is dated at its arrival and earlier intervals of the same notification by subtracting the intervals that follow them (`packetBeatTimes()`); times never decrease
+- `Event Type` / `Annotation` — each event is written once, on the beat nearest to its time; several events on the same beat are joined with ` | `
+- Fields containing commas, quotes or line breaks are quoted as in RFC 4180 (earlier versions replaced commas with semicolons)
 
 ### TXT Format
 
@@ -672,11 +681,11 @@ maxSamples = 650    // ~5 s at 130 Hz
 
 // IndexedDB
 DB_NAME    = 'PolarH10Monitor'
-DB_VERSION = 4
+DB_VERSION = 6
 STORE_NAME = 'sessions'
 
-// Calibration (hard-coded fallback, configurable via settings)
-CALIBRATION_DURATION = 8000  // ms
+// Calibration: appSettings.calibrationSecs (default 8 s); the value used is stored per session
+sessionCalibrationSecs  // s, live recording / restored session
 ```
 
 ---
@@ -700,7 +709,7 @@ Implementation notes: accent colours and the corner radius are CSS variables (`-
 
 ## Testing and verification
 
-* [`tests/`](tests/README.md) — 39 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
+* [`tests/`](tests/README.md) — 70 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, escaping, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
 * [`verification/`](verification/README.md) — numerical cross-check of the HRV indices against NeuroKit2 on a real recording and on synthetic series with a known LF/HF ratio.
 
 ### Changes that affect numerical output
@@ -717,7 +726,7 @@ These make the indices follow the standard definitions and agree with Kubios HRV
 
 ## Known Bugs & Audit Notes
 
-**Status: no open bugs.** All 15 items from the original audit are resolved or were found not to apply to the current code. `engine.js` also passes ESLint (`no-undef`, `no-redeclare`, `no-use-before-define`, `no-unused-vars`) with no implicit globals. Fixes were verified in headless Chromium against a mocked Polar H10 (link drop, calibration, reset, bursty ECG, slow IndexedDB).
+**Status: no known open bugs.** All 15 items from the original audit and the 21 defects of the 2026-11 maintenance review are resolved or were found not to apply to the current code. `engine.js` also passes ESLint (`no-undef`, `no-redeclare`, `no-use-before-define`, `no-unused-vars`) with no implicit globals. Fixes were verified in headless Chromium against a mocked Polar H10 (link drop, calibration, reset, bursty ECG, slow IndexedDB).
 
 ### Original audit
 
@@ -743,11 +752,44 @@ These make the indices follow the standard definitions and agree with Kubios HRV
 
 Disconnect button skipped its confirmation · dropped BLE links were never saved · a disconnect during the first auto-save created a duplicate session · ECG samples overlapped under bursty delivery · theme attribute stored as the string `"null"` · mobile 1-column layout overwrote the saved desktop layout · charts redrew while the Record tab was hidden · History / Analyze / Export content clipped on narrow screens · History tag and subject filters reset on every auto-save · tags were inserted into HTML unescaped · `Math.min(...array)` overflow in the Poincaré plot · overlapping SRI animations · `Plotly.update` called with a misplaced argument in the spectrogram · fixed ×10 report resolution (~36 MB files) · unused locals and dead helpers removed.
 
+### Maintenance review (2026-11)
+
+Eight defects were found by a full code review, reproduced in headless Chromium and fixed; each is covered by a regression test in `tests/run_tests.py`.
+
+| # | Defect | Fix |
+|---|---|---|
+| 16 | Renaming a stored session (and the SRI back-fill on restore) rebuilt the record through `saveSession()`: `stats.avgRR` / `stats.rmssd` became `null`, the date became "now" and SRI could be taken from the live session | New `updateSession(id, patch)` merges into the stored record |
+| 17 | Deleting the protocol that was running left its timer throwing every second | The runner is stopped (with a `Protocol deleted` marker); it also guards against a missing protocol or an edited, shorter one |
+| 18 | CSV header and HTML report always stated an 8 s calibration | The calibration actually used is stored with every session and written to the header and report (`not recorded` for older sessions) |
+| 19 | Editing a subject reset `createdAt` and erased `notes` | The edit merges into the stored subject |
+| 20 | Subject names with `"` broke the subject picker; names, session names, tags, protocol / phase names and annotations were inserted unescaped in several templates and in the report | `escapeHTML()` everywhere; no user text inside inline `onclick` handlers |
+| 21 | The 6 s timer of the "Protocol complete" banner hid the runner of a protocol started right after | Timer handle stored, cleared on start, and it never hides a running protocol |
+| 22 | HR packets with the Energy Expended flag (0x08) produced a false RR value; a malformed trailing byte threw a `RangeError` | Parser follows the Heart Rate profile layout and ignores incomplete fields |
+| 23 | `Math.min(...array)` still used in session metrics and the report (stack overflow at ~200 000 beats) | `reduce` |
+| 24 | `calibrationStartTime` survived a disconnect, so a session restored afterwards was exported (header, file name, report) with the date of the previous live recording | Cleared on disconnect and on restore |
+| 25 | Deleting a subject left its sessions pointing at the deleted id: they disappeared from every subject filter, including *Anonymous* | Sessions are unassigned (`subjectId: null`, name kept as label) |
+| 26 | Deleting the session being recorded (or *Delete all*) only lasted until the next auto-save re-created it | The live session cannot be deleted; *Delete all* keeps it and says so |
+| 27 | Events marked during calibration were stamped 0 s | Negative time on the RR clock, as for the ECG |
+| 28 | The HTML report described the spectrogram as *linearly* interpolated with indigo/pink boundary lines, the whole-recording RMSSD as a 1-min value, and the rolling windows as 1 min regardless of the setting | Text matches the computation (PCHIP, dotted lines, whole recording, configured window) |
+| 29 | Export and Comparison selections kept ids of deleted sessions (wrong "N selected" count, slots of the 6-session limit used) | Pruned on render |
+| 30 | An auto-save still in flight during a live *Reset* re-attached the pre-reset record, which the new data then overwrote | Session generation counter; the final save on disconnect only reuses an id from the same recording |
+| 31 | History, Subjects, Analyze (Trends, Summary) and the Export table showed `stats.rmssd` / `stats.avgRR` — the **last minute** before the save — while the aggregate CSV/JSON used the whole recording | All stored-session views use whole-recording metrics (`sessionMetrics()`, cached); Summary SDs are sample SDs; Trends plot the real start time, so same-day sessions no longer stack |
+| 32 | `formatDate()` counted 24-h blocks: a session at 23:59 yesterday showed as "Today" | Calendar days |
+| 33 | Without IndexedDB (blocked storage, some private modes) initialisation stopped half-way: no grid layout, no gauge, no settings | The app initialises, warns that sessions will not be auto-saved, lists are empty and writes fail with a clear message; `onblocked` / `onversionchange` handled |
+| 34 | A connection failing after `gatt.connect()` left the strap linked and streaming with no session | The link is closed on failure |
+| 35 | Artifact-filter lock-out: one plausible-but-wrong accepted interval made every later normal beat fail the Δ test (40 of 41 beats rejected, data quality 2.4 % in a test) | Re-anchoring rule 3 (see *Calibration & Artifact Rejection*); live and batch cleaning share one implementation |
+| 36 | All RR intervals of one Bluetooth notification shared one time stamp (duplicated times in CSVs, events attached to the wrong beat of the packet) | Beats dated by cumulative RR back from the arrival time, clamped to be non-decreasing and ≥ 0 |
+
+Also changed: CSV fields are quoted as in RFC 4180 and events are attached to the nearest beat (previously an event could be written twice or dropped); the five CSV writers share one implementation; settings read from storage or an imported file are range-checked; a failed final save on disconnect is reported to the user; the Comparison view's rolling RMSSD is O(n) instead of O(n²); ZIP entries with equal names no longer overwrite each other and file names contain no `:`; protocol phases must last longer than 0 s.
+
+Known and left as is: the row checkboxes of the History table view have no action attached (bulk download uses the filters).
+
 ### Notes (not bugs)
 
 - **Lomb–Scargle PSD is not used by the UI.** `calculatePSD()`, `lombScarglePeriodogram()`, `smoothSpectrum()` and `integrateBandPower()` are kept as tested utilities but nothing calls them: the spectrogram, the LF/HF value and the SRI all use the Morlet CWT. Keep this in mind when describing the software in publications.
 - `const status` shadows the browser's `window.status`; harmless, and left as is because it is used throughout.
-- Other user-supplied text (session names, subject names, annotations) is still inserted into `innerHTML` in several templates. Tags and filter options are escaped via `escapeHTML()`; the rest only affects the local user's own data.
+- Time stamps follow the host clock at notification arrival (BLE latency and jitter of up to ~1 s remain); within a notification beats are spaced by their RR intervals. Event markers use the same clock.
+- The per-plot CSV download contains the plotted (display-decimated) values, as documented; use the session CSV for the full series.
 
 ---
 

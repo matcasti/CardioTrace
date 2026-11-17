@@ -56,15 +56,27 @@ const DEFAULT_SETTINGS = {
 let appSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 
 // Merge a (possibly partial / older) saved object over the defaults, one level deep
+function clampNum(v, lo, hi, def) {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+}
 function mergeSettings(p) {
-    p = p || {};
-    return {
+    p = (p && typeof p === 'object') ? p : {};
+    const m = {
         ...DEFAULT_SETTINGS, ...p,
         visibleCharts: { ...DEFAULT_SETTINGS.visibleCharts, ...(p.visibleCharts || {}) },
         appearance:    { ...DEFAULT_SETTINGS.appearance,    ...(p.appearance    || {}) },
         chartPrefs:    { ...(p.chartPrefs || {}) },
         report:        { scale: 4, ...(p.report || {}), sections: { ...((p.report && p.report.sections) || {}) } }
     };
+    // Same ranges as the Settings sliders: a hand-edited or corrupted file cannot break acquisition
+    m.age               = Math.round(clampNum(m.age, 10, 100, DEFAULT_SETTINGS.age));
+    m.calibrationSecs   = Math.round(clampNum(m.calibrationSecs, 1, 30, DEFAULT_SETTINGS.calibrationSecs));
+    m.autosaveSecs      = Math.round(clampNum(m.autosaveSecs, 5, 120, DEFAULT_SETTINGS.autosaveSecs));
+    m.rmssdWindow       = Math.round(clampNum(m.rmssdWindow, 30, 300, DEFAULT_SETTINGS.rmssdWindow));
+    m.artifactThreshold = clampNum(m.artifactThreshold, 50, 1000, DEFAULT_SETTINGS.artifactThreshold);
+    m.report.scale      = clampNum(m.report.scale, 1, 10, 4);
+    return m;
 }
 
 function loadSettings() {
@@ -75,7 +87,8 @@ function loadSettings() {
 }
 
 function saveSettings() {
-    localStorage.setItem('cardioTraceSettings', JSON.stringify(appSettings));
+    try { localStorage.setItem('cardioTraceSettings', JSON.stringify(appSettings)); }
+    catch (e) { console.warn('Settings could not be saved (storage full or blocked):', e); }
 }
 
 function applyChartVisibility() {
@@ -279,6 +292,7 @@ let currentPhaseIdx     = 0;
 let phaseTimer          = null;
 let phaseSecondsLeft    = 0;
 let protocolRunning     = false;
+let protocolBannerTimer = null;  // hides the 'Protocol complete' banner
 let protocolEditorState = { id: null, name: '', phases: [] };
 let analyzeCurrentSubtab  = 'trends';
 let comparisonSelectedIds = new Set();
@@ -296,9 +310,11 @@ let exportSelectedIds = new Set();
 let lastPacketTime = Date.now();
 let isCalibrating = false;
 let calibrationEndTime = null;
-const CALIBRATION_DURATION = 8000; // 8 seconds in milliseconds
+let sessionCalibrationSecs = null; // calibration length used by the current recording (s)
 let rawRRIntervals = []; // Store all raw data
 let rawTimestamps = []; // Store all raw timestamps
+const REANCHOR_BEATS = 3;  // artifact filter: consistent beats needed to re-anchor (see rrFilterStep)
+let _rrRun = [];          // live: pending run of mutually consistent, Δ-rejected beats [{rr, t}]
 
 // DOM Elements
 const connectBtn = document.getElementById('connectBtn');
@@ -425,8 +441,10 @@ async function initDB() {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onerror = () => reject(request.error);
+        request.onblocked = () => alert('CardioTrace is open in another tab with an older version. Close the other tabs to finish updating the session database.');
         request.onsuccess = () => {
             db = request.result;
+            db.onversionchange = () => { db.close(); db = null; alert('CardioTrace was updated in another tab. Reload this page to keep saving sessions.'); };
             resolve(db);
         };
         request.onupgradeneeded = (event) => {
@@ -497,7 +515,14 @@ function getEffectiveAge() {
         : (appSettings.age || 30);
 }
 
+function requireDB() {
+    if (db) return true;
+    alert('This needs the session database (IndexedDB), which is not available in this browser.');
+    return false;
+}
+
 async function saveSubject(subjectData, subjectId = null) {
+    if (!db) throw new Error('IndexedDB not available');
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([SUBJECTS_STORE], 'readwrite');
         const store = transaction.objectStore(SUBJECTS_STORE);
@@ -521,6 +546,7 @@ async function saveSubject(subjectData, subjectId = null) {
 }
 
 async function loadSubjects() {
+    if (!db) return [];
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([SUBJECTS_STORE], 'readonly');
         const store = transaction.objectStore(SUBJECTS_STORE);
@@ -595,8 +621,7 @@ async function renderSubjectPickerList() {
 
     const anonSelected = currentSubjectId === null;
     let html = `
-        <div class="subject-option ${anonSelected ? 'selected' : ''}"
-             onclick="selectSubject(null,'Anonymous',null)">
+        <div class="subject-option ${anonSelected ? 'selected' : ''}" data-sid="">
             <div class="subject-option-icon">👤</div>
             <div class="subject-option-info">
                 <div class="subject-option-name">Anonymous</div>
@@ -609,13 +634,12 @@ async function renderSubjectPickerList() {
     subjects.sort((a, b) => a.name.localeCompare(b.name)).forEach(s => {
         const isSel = currentSubjectId === s.id;
         html += `
-            <div class="subject-option ${isSel ? 'selected' : ''}"
-                 onclick="selectSubject(${s.id},'${s.name.replace(/'/g,"\\'")}',${s.age})">
+            <div class="subject-option ${isSel ? 'selected' : ''}" data-sid="${s.id}">
                 <div class="subject-option-icon" style="background:rgba(99,102,241,0.15);color:var(--accent-primary);font-weight:800;font-size:15px;">
-                    ${s.name.charAt(0).toUpperCase()}
+                    ${escapeHTML(s.name.charAt(0).toUpperCase())}
                 </div>
                 <div class="subject-option-info">
-                    <div class="subject-option-name">${s.name}</div>
+                    <div class="subject-option-name">${escapeHTML(s.name)}</div>
                     <div class="subject-option-sub">${s.age} yrs</div>
                 </div>
                 ${isSel ? '<div class="subject-option-check">✓</div>' : ''}
@@ -624,12 +648,18 @@ async function renderSubjectPickerList() {
     });
 
     list.innerHTML = html;
+    const byId = new Map(subjects.map(s => [String(s.id), s]));
+    list.querySelectorAll('.subject-option').forEach(el => el.addEventListener('click', () => {
+        const s = byId.get(el.dataset.sid);
+        if (s) selectSubject(s.id, s.name, s.age); else selectSubject(null, 'Anonymous', null);
+    }));
 }
 
 async function addAndSelectSubject() {
     const name = document.getElementById('newSubjectName').value.trim();
     const age  = parseInt(document.getElementById('newSubjectAge').value) || 30;
     if (!name) { alert('Please enter a subject name.'); return; }
+    if (!requireDB()) return;
 
     const id = await saveSubject({ name, age, createdAt: new Date().toISOString() });
     document.getElementById('newSubjectName').value = '';
@@ -668,7 +698,8 @@ async function saveSubjectEdit() {
     const name = document.getElementById('editSubjectName').value.trim();
     const age  = parseInt(document.getElementById('editSubjectAge').value) || 30;
     if (!name) return;
-    await saveSubject({ name, age }, id);
+    const prev = await loadSubject(id);                 // keep createdAt / notes
+    await saveSubject({ ...(prev || {}), name, age }, id);
     if (currentSubjectId === id) {
         currentSubjectName = name;
         currentSubjectAge  = age;
@@ -688,6 +719,8 @@ async function confirmDeleteSubject(id) {
     if (!confirm(msg)) return;
     if (currentSubjectId === id) selectSubject(null, 'Anonymous', null);
     await deleteSubject(id);
+    // Unassign (the name is kept as a label); otherwise they vanish from every subject filter
+    for (const s of sessions.filter(x => x.subjectId === id)) await updateSession(s.id, { subjectId: null });
     await renderSubjects();
     await updateHistoryBadge();
 }
@@ -714,7 +747,7 @@ async function renderSubjects() {
             const ss      = sessions.filter(x => x.subjectId === s.id);
             const sriVals = ss.filter(x => x.sri > 0).map(x => x.sri);
             const avgSRI  = sriVals.length ? Math.round(sriVals.reduce((a,b)=>a+b,0)/sriVals.length) : 0;
-            const rmssdVals = ss.filter(x => x.stats?.rmssd > 0).map(x => x.stats.rmssd);
+            const rmssdVals = ss.map(x => sessionMetrics(x)?.rmssd).filter(v => v > 0);
             const avgRMSSD  = rmssdVals.length ? (rmssdVals.reduce((a,b)=>a+b,0)/rmssdVals.length).toFixed(1) : null;
             const last      = ss.sort((a,b) => b.timestamp - a.timestamp)[0];
             const sriCls    = avgSRI >= 75 ? 'sri-excellent' : avgSRI >= 55 ? 'sri-good' : avgSRI >= 35 ? 'sri-fair' : avgSRI > 0 ? 'sri-poor' : '';
@@ -723,9 +756,9 @@ async function renderSubjects() {
             <div class="subject-card ${isActive ? 'subject-card--active' : ''}">
                 <div class="subject-card-header">
                     <div class="subject-card-identity">
-                        <div class="subject-card-avatar">${s.name.charAt(0).toUpperCase()}</div>
+                        <div class="subject-card-avatar">${escapeHTML(s.name.charAt(0).toUpperCase())}</div>
                         <div>
-                            <div class="subject-card-name">${s.name}</div>
+                            <div class="subject-card-name">${escapeHTML(s.name)}</div>
                             <div class="subject-card-meta">${s.age} yrs · ${ss.length} session${ss.length!==1?'s':''}</div>
                         </div>
                     </div>
@@ -753,11 +786,16 @@ async function renderSubjects() {
                     </div>
                 </div>
                 <button class="btn subject-select-btn ${isActive ? 'btn-active-subject' : 'btn-secondary'}"
-                        onclick="selectSubject(${s.id},'${s.name.replace(/'/g,"\\'")}',${s.age});renderSubjects();">
+                        data-sid="${s.id}">
                     ${isActive ? '● Active Subject' : 'Set as Active Subject'}
                 </button>
             </div>`;
         }).join('');
+        const byId = new Map(subjects.map(s => [String(s.id), s]));
+        content.querySelectorAll('.subject-select-btn').forEach(btn => btn.addEventListener('click', () => {
+            const s = byId.get(btn.dataset.sid);
+            if (s) { selectSubject(s.id, s.name, s.age); renderSubjects(); }
+        }));
     } catch(e) {
         console.error('renderSubjects failed:', e);
     }
@@ -1056,11 +1094,23 @@ function computeSessionMetrics(session) {
     const pnn50   = n > 1 ? (nn50 / (n - 1)) * 100 : 0;
     const hrVals  = rr.map(r => 60000 / r);
     const mean_hr = hrVals.reduce((a, b) => a + b, 0) / hrVals.length;
-    const min_hr  = Math.min(...hrVals);
+    const min_hr  = hrVals.reduce((a, b) => Math.min(a, b), Infinity);   // no spread: long sessions overflow the stack
     const rawN    = (session.rawRRIntervals || []).length || n;
     const dq      = rawN > 0 ? parseFloat((n / rawN * 100).toFixed(1)) : 100;
 
     return { mean_rr, sdnn, rmssd, pnn50, mean_hr, min_hr, dq, n, rawN };
+}
+
+// Whole-recording metrics of a stored session, cached (lists re-read every session from IndexedDB).
+// stats.avgRR / stats.rmssd are only the last minute before the save: never use them to compare sessions.
+const _metricsCache = new Map();
+function sessionMetrics(s) {
+    const key = `${s.id}:${(s.rrIntervals || []).length}:${(s.rawRRIntervals || []).length}`;
+    if (!_metricsCache.has(key)) {
+        if (_metricsCache.size > 500) _metricsCache.clear();
+        _metricsCache.set(key, computeSessionMetrics(s));
+    }
+    return _metricsCache.get(key);
 }
 
 // ── Filter helpers ────────────────────────────────────────
@@ -1099,12 +1149,12 @@ async function updateExportFilters() {
 
     subEl.innerHTML = '<option value="">All Subjects</option><option value="anonymous">Anonymous</option>' +
         subjects.sort((a, b) => a.name.localeCompare(b.name))
-            .map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+            .map(s => `<option value="${s.id}">${escapeHTML(s.name)}</option>`).join('');
 
     const allTags = new Set();
     sessions.forEach(s => (s.tags || []).forEach(t => allTags.add(t)));
     tagEl.innerHTML = '<option value="">All Tags</option>' +
-        Array.from(allTags).sort().map(t => `<option value="${t}">${t}</option>`).join('');
+        Array.from(allTags).sort().map(t => `<option value="${escapeHTML(t)}">${escapeHTML(t)}</option>`).join('');
 
     subEl.value = prevSub;
     tagEl.value = prevTag;
@@ -1113,6 +1163,8 @@ async function updateExportFilters() {
 // ── Tab render ────────────────────────────────────────────
 async function renderExportTab() {
     await updateExportFilters();
+    const existing = new Set((await loadSessions()).map(s => s.id));
+    [...exportSelectedIds].forEach(id => { if (!existing.has(id)) exportSelectedIds.delete(id); });
 
     const filtered = await getExportFilteredSessions();
     const list     = document.getElementById('exportSessionList');
@@ -1129,9 +1181,9 @@ async function renderExportTab() {
         const isSel    = exportSelectedIds.has(s.id);
         const sriClass = s.sri >= 75 ? 'sri-excellent' : s.sri >= 55 ? 'sri-good'
                        : s.sri >= 35 ? 'sri-fair'      : s.sri > 0  ? 'sri-poor' : '';
-        const tags     = (s.tags || []).map(t => `<span class="session-tag">${t}</span>`).join('');
+        const tags     = (s.tags || []).map(t => `<span class="session-tag">${escapeHTML(t)}</span>`).join('');
         const subHtml  = s.subjectName && s.subjectName !== 'Anonymous'
-            ? `<span class="session-subject-chip" style="font-size:11px;">👤 ${s.subjectName}</span>`
+            ? `<span class="session-subject-chip" style="font-size:11px;">👤 ${escapeHTML(s.subjectName)}</span>`
             : `<span style="color:var(--text-tertiary)">—</span>`;
 
         return `
@@ -1140,14 +1192,14 @@ async function renderExportTab() {
                 <input type="checkbox" class="export-row-check" data-id="${s.id}" ${isSel ? 'checked' : ''}>
             </td>
             <td class="export-col-name">
-                <div class="export-session-name">${s.filename || 'polar-h10-data'}</div>
-                ${s.protocolName ? `<span class="export-proto-tag">🔬 ${s.protocolName}</span>` : ''}
+                <div class="export-session-name">${escapeHTML(s.filename || 'polar-h10-data')}</div>
+                ${s.protocolName ? `<span class="export-proto-tag">🔬 ${escapeHTML(s.protocolName)}</span>` : ''}
             </td>
             <td class="export-col-subject">${subHtml}</td>
             <td class="export-col-date">${formatDate(s.date)}</td>
             <td>${formatDuration(s.duration)}</td>
             <td class="export-col-num">${s.stats?.samples || s.rrIntervals?.length || '—'}</td>
-            <td class="export-col-num">${s.stats?.rmssd ? s.stats.rmssd.toFixed(1) : '—'}</td>
+            <td class="export-col-num">${sessionMetrics(s)?.rmssd ? sessionMetrics(s).rmssd.toFixed(1) : '—'}</td>
             <td class="export-col-num sri-el ${sriClass}" style="font-weight:700;">${s.sri > 0 ? s.sri : '—'}</td>
             <td>${tags || '<span style="color:var(--text-tertiary)">—</span>'}</td>
         </tr>`;
@@ -1242,11 +1294,7 @@ async function exportSelectedSummaryCSV() {
             'n_events','event_types','tags'
         ];
 
-        const esc = v => {
-            if (v == null || v === '') return '';
-            const s = String(v);
-            return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-        };
+        const esc = csvField;
         const f = (v, d = 1) => (v != null && isFinite(v)) ? parseFloat(v.toFixed(d)) : '';
 
         const rows = sessions.map(s => {
@@ -1307,29 +1355,16 @@ async function exportSelectedZip() {
         const allSessions = await loadSessions();
         const sessions    = allSessions.filter(s => exportSelectedIds.has(s.id));
         const zip         = new JSZip();
+        const usedNames   = new Set();
 
         for (const s of sessions) {
             const d    = new Date(s.startTime || s.timestamp);
-            const base = `${s.filename || 'polar-h10'}_${d.toISOString().slice(0, 16).replace(':', '-')}`;
+            const base = uniqueZipName(usedNames, `${s.filename || 'polar-h10'}_${d.toISOString().slice(0, 16)}`);
 
             if (format === 'txt') {
                 zip.file(`${base}.txt`, s.rrIntervals.map(r => r.toFixed(3)).join('\n'));
             } else {
-                let csv = generateMetadataHeader({
-                    filename: s.filename, startTime: s.startTime,
-                    tags: s.tags || [], rrCount: s.rrIntervals.length,
-                    rawRRCount: s.rawRRIntervals?.length || s.rrIntervals.length,
-                    eventCount: s.eventMarkers?.length || 0, includeRaw: false,
-                    sessionTimestamps: s.timestamps, sessionEventMarkers: s.eventMarkers || []
-                });
-                csv += 'Timestamp (s),RR Interval (ms),Event Type,Annotation\n';
-                for (let i = 0; i < s.rrIntervals.length; i++) {
-                    const ts = s.timestamps[i];
-                    const rr = s.rrIntervals[i];
-                    const ev = s.eventMarkers?.find(e => Math.abs(e.time - ts) < 0.5);
-                    csv += `${ts.toFixed(3)},${rr.toFixed(3)},${ev?.type || ''},${(ev?.annotation || '').replace(/,/g, ';')}\n`;
-                }
-                zip.file(`${base}.csv`, csv);
+                zip.file(`${base}.csv`, storedSessionCSV(s));
             }
         }
 
@@ -1451,7 +1486,7 @@ async function updateAnalyzeSubjectFilter() {
     el.innerHTML = '<option value="">All Subjects</option>' +
         '<option value="anonymous">Anonymous</option>' +
         subjects.sort((a,b) => a.name.localeCompare(b.name))
-            .map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+            .map(s => `<option value="${s.id}">${escapeHTML(s.name)}</option>`).join('');
 }
 
 // ── Analyze tab dispatcher ────────────────────────────────
@@ -1511,7 +1546,7 @@ async function renderTrendsView() {
             const ss    = sessions.filter(s => (s.subjectId ? String(s.subjectId) : 'anon') === key);
             const color = colorMap[key];
             const label = ss[0]?.subjectName || 'Anonymous';
-            const xs    = ss.map(s => new Date(s.timestamp).toISOString().slice(0,10));
+            const xs    = ss.map(s => new Date(s.startTime || s.timestamp));
             const ys    = ss.map(metricFn);
 
             traces.push({
@@ -1520,7 +1555,7 @@ async function renderTrendsView() {
                 line: { color, width: 2 },
                 marker: { color, size: 8, line: { color: 'rgba(255,255,255,0.8)', width: 1.5 } },
                 connectgaps: false,
-                hovertemplate: `%{x}<br>${yLabel}: <b>%{y:.1f}</b><extra>${label}</extra>`
+                hovertemplate: `%{x|%Y-%m-%d %H:%M}<br>${yLabel}: <b>%{y:.1f}</b><extra>${escapeHTML(label)}</extra>`
             });
 
             // Trend line — needs ≥3 valid points
@@ -1530,7 +1565,7 @@ async function renderTrendsView() {
             if (pairs.length >= 3) {
                 const reg  = linearRegression(pairs.map(p => p.x), pairs.map(p => p.y));
                 const tYs  = pairs.map(p => reg.slope * p.x + reg.intercept);
-                const tXs  = pairs.map(p => new Date(p.x).toISOString().slice(0,10));
+                const tXs  = pairs.map(p => new Date(p.x));
                 traces.push({
                     x: tXs, y: tYs,
                     type: 'scatter', mode: 'lines', name: `${label} trend`,
@@ -1547,7 +1582,7 @@ async function renderTrendsView() {
         { ...baseLayout, yaxis: { ...baseLayout.yaxis, title: 'SRI', range: [0, 105] } }, cfg);
 
     Plotly.react('analyzeChartRMSSD',
-        buildTraces(s => s.stats?.rmssd > 0 ? Math.round(s.stats.rmssd * 10) / 10 : null, 'RMSSD (ms)'),
+        buildTraces(s => sessionMetrics(s)?.rmssd > 0 ? Math.round(sessionMetrics(s).rmssd * 10) / 10 : null, 'RMSSD (ms)'),
         { ...baseLayout, yaxis: { ...baseLayout.yaxis, title: 'RMSSD (ms)' } }, cfg);
 
     Plotly.react('analyzeChartLFHF',
@@ -1559,6 +1594,8 @@ async function renderTrendsView() {
 
 async function renderComparisonView() {
     const sessions = await loadSessions();
+    const existing = new Set(sessions.map(s => s.id));
+    [...comparisonSelectedIds].forEach(id => { if (!existing.has(id)) comparisonSelectedIds.delete(id); });
     sessions.sort((a,b) => b.timestamp - a.timestamp);
     const recent = sessions.slice(0, 40);
 
@@ -1580,10 +1617,10 @@ async function renderComparisonView() {
                  style="background:${color || 'transparent'};border:${color ? 'none' : '1px solid var(--border-color)'};">
             </div>
             <div class="comparison-session-info">
-                <div class="comparison-session-name">${s.filename || 'Session'}</div>
+                <div class="comparison-session-name">${escapeHTML(s.filename || 'Session')}</div>
                 <div class="comparison-session-meta">
                     ${formatDate(s.date)} · ${formatDuration(s.duration)}
-                    ${s.subjectName && s.subjectName !== 'Anonymous' ? ` · ${s.subjectName}` : ''}
+                    ${s.subjectName && s.subjectName !== 'Anonymous' ? ` · ${escapeHTML(s.subjectName)}` : ''}
                 </div>
             </div>
         </div>`;
@@ -1642,16 +1679,15 @@ async function renderComparisonChart() {
             const rr = s.rrIntervals || [];
             const ts = s.timestamps  || [];
             const rmssdX = [], rmssdY = [];
+            let left = 0, sq = 0;                         // sliding 60 s window over successive differences
             for (let i = 1; i < rr.length; i++) {
+                sq += (rr[i] - rr[i-1]) ** 2;
                 const t = ts[i];
-                if (t < 30) continue;
-                const ws = t - 60;
-                const win = rr.filter((_, j) => ts[j] >= ws && j <= i);
-                if (win.length < 2) continue;
-                let sq = 0;
-                for (let k = 1; k < win.length; k++) sq += (win[k] - win[k-1]) ** 2;
+                while (left < i && ts[left] < t - 60) { sq -= (rr[left+1] - rr[left]) ** 2; left++; }
+                const pairs = i - left;
+                if (t < 30 || pairs < 1) continue;
                 rmssdX.push(t);
-                rmssdY.push(Math.sqrt(sq / (win.length - 1)));
+                rmssdY.push(Math.sqrt(Math.max(0, sq) / pairs));
             }
             xs = rmssdX;
             ys = rmssdY;
@@ -1717,7 +1753,7 @@ async function renderSummaryView() {
         if (!vals.length) return null;
         const avg = vals.reduce((a,b) => a+b) / vals.length;
         const sd  = vals.length > 1
-            ? Math.sqrt(vals.reduce((s,v) => s + (v-avg)**2, 0) / vals.length)
+            ? Math.sqrt(vals.reduce((s,v) => s + (v-avg)**2, 0) / (vals.length - 1))
             : 0;
         return { avg, sd, n: vals.length };
     }
@@ -1748,8 +1784,8 @@ async function renderSummaryView() {
         <tbody>
         ${groups.map((g, gi) => {
             const sriSt  = stats(g.ss, s => s.sri > 0 ? s.sri : null);
-            const rmssdSt = stats(g.ss, s => s.stats?.rmssd > 0 ? s.stats.rmssd : null);
-            const hrSt   = stats(g.ss, s => s.stats?.avgRR > 0 ? 60000 / s.stats.avgRR : null);
+            const rmssdSt = stats(g.ss, s => sessionMetrics(s)?.rmssd || null);
+            const hrSt   = stats(g.ss, s => sessionMetrics(s)?.mean_hr || null);
             const sriClass = sriSt
                 ? (sriSt.avg >= 75 ? 'sri-excellent' : sriSt.avg >= 55 ? 'sri-good'
                    : sriSt.avg >= 35 ? 'sri-fair' : 'sri-poor')
@@ -1757,7 +1793,7 @@ async function renderSummaryView() {
             return `
             <tr class="${gi === 0 ? 'summary-all-row' : ''}">
                 <td style="white-space:nowrap;">
-                    <span class="summary-avatar">${g.initial}</span>${g.label}
+                    <span class="summary-avatar">${escapeHTML(g.initial)}</span>${escapeHTML(g.label)}
                 </td>
                 <td><span class="summary-val">${g.ss.length}</span></td>
                 <td class="sri-el ${sriClass}">${cell(sriSt,'',0)}</td>
@@ -1775,6 +1811,7 @@ async function renderSummaryView() {
 // ── Protocol CRUD ─────────────────────────────────────────
 
 async function saveProtocol(data, id = null) {
+    if (!db) throw new Error('IndexedDB not available');
     return new Promise((resolve, reject) => {
         const tx    = db.transaction(['protocols'], 'readwrite');
         const store = tx.objectStore('protocols');
@@ -1793,6 +1830,7 @@ async function saveProtocol(data, id = null) {
 }
 
 async function loadProtocols() {
+    if (!db) return [];
     return new Promise((resolve, reject) => {
         const tx  = db.transaction(['protocols'], 'readonly');
         const req = tx.objectStore('protocols').getAll();
@@ -1832,7 +1870,7 @@ function getProtocolTotalSecs(protocol) {
 }
 
 function formatProtocolPhaseList(protocol) {
-    return protocol.phases.map(p => `${p.name} ${formatPhaseTime(p.durationSecs)}`).join(' → ');
+    return protocol.phases.map(p => `${escapeHTML(p.name)} ${formatPhaseTime(p.durationSecs)}`).join(' → ');
 }
 
 function updateProtocolChipDisplay() {
@@ -1898,7 +1936,7 @@ async function renderProtocolPickerList() {
         return `
         <div class="protocol-option ${isSel ? 'selected' : ''}">
             <div class="protocol-option-header">
-                <div class="protocol-option-name">${p.name}</div>
+                <div class="protocol-option-name">${escapeHTML(p.name)}</div>
             </div>
             <div class="protocol-option-phases">${formatProtocolPhaseList(p)}</div>
             <div class="protocol-option-meta">${p.phases.length} phases · ${formatPhaseTime(getProtocolTotalSecs(p))}</div>
@@ -1948,6 +1986,7 @@ async function confirmDeleteProtocol(id) {
     const p = await loadProtocol(id);
     if (!confirm(`Delete protocol "${p.name}"?`)) return;
     if (activeProtocol?.id === id) {
+        if (protocolRunning) { addEventMarkerProgrammatic('Protocol deleted'); stopProtocolRunner(); }
         activeProtocol = null;
         updateProtocolChipDisplay();
     }
@@ -1995,7 +2034,7 @@ function renderProtocolPhaseEditor() {
         return `
         <div class="protocol-phase-row" data-idx="${i}">
             <div class="phase-row-num">${i + 1}</div>
-            <input type="text"   class="phase-name-input" value="${phase.name}" placeholder="Phase name" data-idx="${i}">
+            <input type="text"   class="phase-name-input" value="${escapeHTML(phase.name)}" placeholder="Phase name" data-idx="${i}">
             <input type="number" class="phase-min-input"  value="${mins}" min="0" max="120" data-idx="${i}">
             <span class="phase-sep">m</span>
             <input type="number" class="phase-sec-input"  value="${secs}" min="0" max="59"  data-idx="${i}">
@@ -2039,13 +2078,25 @@ function addEditorPhase() {
 async function saveProtocolFromEditor() {
     const name = document.getElementById('protocolEditorName').value.trim();
     if (!name) { alert('Please enter a protocol name.'); return; }
+    if (!requireDB()) return;
     if (protocolEditorState.phases.length === 0) { alert('Add at least one phase.'); return; }
+    if (protocolEditorState.phases.some(ph => !(ph.durationSecs > 0))) { alert('Every phase needs a duration longer than 0 s.'); return; }
+    protocolEditorState.phases.forEach((ph, i) => { ph.name = (ph.name || '').trim() || `Phase ${i + 1}`; });
 
     const id = await saveProtocol({ name, phases: protocolEditorState.phases }, protocolEditorState.id || null);
 
     // If this was the active protocol, refresh it
     if (activeProtocol && (activeProtocol.id === protocolEditorState.id || activeProtocol.id === id)) {
-        activeProtocol = { id, name, phases: protocolEditorState.phases };
+        activeProtocol = { id, name, phases: protocolEditorState.phases.map(ph => ({ ...ph })) };
+        if (protocolRunning && currentPhaseIdx >= activeProtocol.phases.length) {
+            currentPhaseIdx = activeProtocol.phases.length - 1;
+            phaseSecondsLeft = Math.min(phaseSecondsLeft, activeProtocol.phases[currentPhaseIdx].durationSecs);
+        }
+        if (protocolRunning) {
+            document.getElementById('protocolRunnerName').textContent = name;
+            document.getElementById('protocolPhaseTotal').textContent = activeProtocol.phases.length;
+            updateProtocolRunnerUI();
+        }
         updateProtocolChipDisplay();
     }
 
@@ -2068,6 +2119,7 @@ function addEventMarkerProgrammatic(type, annotation = '') {
 
 function startProtocolRunner() {
     if (!activeProtocol?.phases?.length) return;
+    clearTimeout(protocolBannerTimer);
     currentPhaseIdx  = 0;
     phaseSecondsLeft = activeProtocol.phases[0].durationSecs;
     protocolRunning  = true;
@@ -2135,6 +2187,7 @@ function skipProtocolPhase() {
 }
 
 function advanceProtocolPhase() {
+    if (!activeProtocol?.phases?.length) { stopProtocolRunner(); return; }
     const phases = activeProtocol.phases;
     addEventMarkerProgrammatic(`End: ${phases[currentPhaseIdx].name}`);
     currentPhaseIdx++;
@@ -2152,7 +2205,8 @@ function advanceProtocolPhase() {
                 <button class="btn btn-secondary protocol-runner-btn"
                         onclick="document.getElementById('protocolRunnerPanel').style.display='none'">Dismiss</button>
             </div>`;
-        setTimeout(() => { if (panel) panel.style.display = 'none'; }, 6000);
+        clearTimeout(protocolBannerTimer);
+        protocolBannerTimer = setTimeout(() => { if (!protocolRunning) panel.style.display = 'none'; }, 6000);
         return;
     }
 
@@ -2164,6 +2218,7 @@ function advanceProtocolPhase() {
 function updateProtocolRunnerUI() {
     if (!protocolRunning || !activeProtocol) return;
     const phase   = activeProtocol.phases[currentPhaseIdx];
+    if (!phase) return;
     const total   = phase.durationSecs;
     const elapsed = total - phaseSecondsLeft;
 
@@ -2177,7 +2232,7 @@ function updateProtocolRunnerUI() {
     numEl.textContent  = currentPhaseIdx + 1;
     nmEl.textContent   = phase.name;
     tmEl.textContent   = formatPhaseTime(phaseSecondsLeft);
-    fillEl.style.width = `${(elapsed / total) * 100}%`;
+    fillEl.style.width = `${total > 0 ? Math.min(100, (elapsed / total) * 100) : 100}%`;
 
     const nextPhase = activeProtocol.phases[currentPhaseIdx + 1];
     nextEl.textContent = nextPhase
@@ -2311,32 +2366,16 @@ function calculatePSD(rrIntervals, timestamps) {
 // Clean RR interval data - remove artifacts and invalid values
 // This version is for batch processing (e.g., for exports with raw data option)
 function cleanRRData(rrIntervals, timestamps) {
+    // Same rules as the live filter (rrFilterStep), so restored old-format sessions are cleaned identically
     const cleaned = { rr: [], times: [] };
-
-    // Define physiological limits (ms) - MUST MATCH isValidRRInterval
-    const minRR = 250;  // 240 BPM max (60000 / 250)
-    const maxRR = 2000; // 30 BPM min
-    const maxDiff = appSettings.artifactThreshold || 300;
-
+    const run = [];
     for (let i = 0; i < rrIntervals.length; i++) {
-        const rr = rrIntervals[i];
-
-        // Check physiological validity
-        if (rr < minRR || rr > maxRR) continue;
-
-        // Check for sudden jumps (artifacts)
-        if (cleaned.rr.length > 0) {
-            const prevRR = cleaned.rr[cleaned.rr.length - 1];
-            if (Math.abs(rr - prevRR) > maxDiff) continue;
+        const last = cleaned.rr.length ? cleaned.rr[cleaned.rr.length - 1] : null;
+        for (const b of rrFilterStep(rrIntervals[i], timestamps[i], last, run)) {
+            cleaned.rr.push(b.rr);
+            cleaned.times.push(b.t);
         }
-
-        // Check for valid timestamp
-        if (!isFinite(timestamps[i])) continue;
-
-        cleaned.rr.push(rr);
-        cleaned.times.push(timestamps[i]);
     }
-
     return cleaned;
 }
 
@@ -2811,6 +2850,7 @@ function integrateBandPower(freq, psd, fMin, fMax) {
 
 // Save session
 async function saveSession(sessionData, sessionId = null) {
+    if (!db) throw new Error('session storage (IndexedDB) is not available in this browser');
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const objectStore = transaction.objectStore(STORE_NAME);
@@ -2838,6 +2878,7 @@ async function saveSession(sessionData, sessionId = null) {
             sri: sessionData.sri || sriScore,
             sriComponents: sessionData.sriComponents || sriComponents,
             peakHR: sessionData.peakHR || peakHR,
+            calibrationSecs: sessionData.calibrationSecs ?? null,
             subjectId:    sessionData.subjectId    !== undefined ? sessionData.subjectId    : currentSubjectId,
             subjectName:  sessionData.subjectName  !== undefined ? sessionData.subjectName  : currentSubjectName,
             protocolId:   sessionData.protocolId   !== undefined ? sessionData.protocolId   : (activeProtocol?.id   ?? null),
@@ -2857,8 +2898,25 @@ async function saveSession(sessionData, sessionId = null) {
     });
 }
 
+// Change some fields of a STORED session (rename, SRI back-fill) without rebuilding it:
+// saveSession() is for live data and would reset date, stats and SRI from the live globals.
+async function updateSession(id, patch) {
+    return new Promise((resolve, reject) => {
+        const store = db.transaction([STORE_NAME], 'readwrite').objectStore(STORE_NAME);
+        const get = store.get(id);
+        get.onsuccess = () => {
+            if (!get.result) { reject(new Error(`Session ${id} not found`)); return; }
+            const put = store.put({ ...get.result, ...patch, id });
+            put.onsuccess = () => resolve(id);
+            put.onerror = () => reject(put.error);
+        };
+        get.onerror = () => reject(get.error);
+    });
+}
+
 // Load sessions
 async function loadSessions() {
+    if (!db) return [];
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([STORE_NAME], 'readonly');
         const objectStore = transaction.objectStore(STORE_NAME);
@@ -2866,6 +2924,15 @@ async function loadSessions() {
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
     });
+}
+
+// The live recording keeps being auto-saved under currentSessionId: deleting it would only make it reappear
+function isLiveSession(id) { return isConnected && currentSessionId != null && id === currentSessionId; }
+async function confirmAndDeleteSession(id) {
+    if (isLiveSession(id)) { alert('This session is being recorded. Disconnect first, then delete it.'); return false; }
+    if (!confirm('Delete this session?')) return false;
+    await deleteSession(id);
+    return true;
 }
 
 // Delete session
@@ -2881,19 +2948,27 @@ async function deleteSession(id) {
 
 // Clear all sessions
 async function clearAllSessions() {
-    if (!confirm('Are you sure you want to delete ALL sessions? This cannot be undone.')) return;
+    const keepId = isConnected ? currentSessionId : null;   // never delete the recording in progress
+    if (!confirm(keepId != null
+        ? 'Delete ALL saved sessions except the one being recorded? This cannot be undone.'
+        : 'Are you sure you want to delete ALL sessions? This cannot be undone.')) return;
 
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const objectStore = transaction.objectStore(STORE_NAME);
-        const request = objectStore.clear();
-        request.onsuccess = () => {
+        if (keepId != null) {
+            objectStore.delete(IDBKeyRange.upperBound(keepId, true));   // ids below the live one
+            objectStore.delete(IDBKeyRange.lowerBound(keepId, true));   // and above it
+        } else {
+            objectStore.clear();
+        }
+        transaction.oncomplete = () => {
             renderHistory();
             updateHistoryBadge();
             console.log('✓ All sessions cleared');
             resolve();
         };
-        request.onerror = () => reject(request.error);
+        transaction.onerror = () => reject(transaction.error);
     });
 }
 
@@ -2922,22 +2997,26 @@ function formatDuration(seconds) {
 function formatDate(dateString) {
     const date = new Date(dateString);
     const now = new Date();
-    const diffTime = Math.abs(now - date);
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const diffDays = Math.round((startOfDay(now) - startOfDay(date)) / 86400000);   // calendar days (DST-safe)
     const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
     if (diffDays === 0) return `Today at ${timeStr}`;
     if (diffDays === 1) return `Yesterday at ${timeStr}`;
-    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`;
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 // Auto-save session
 let _autoSaveInProgress = false;
-let _autoSaveDone = null;      // resolves when the in-flight auto-save finishes
+let _autoSaveDone = null;      // resolves with { id, gen } when the in-flight auto-save finishes
 let _lastAutoSaveId = null;    // id created by the latest auto-save (used by the final save at disconnect)
+let _sessionGen = 0;           // bumped by connect / reset: a late auto-save result then belongs to an older session
+                               // (not by disconnect: its final save waits for that auto-save to know the record id)
 async function autoSaveSession() {
     if (!isConnected || rrIntervals.length === 0 || _autoSaveInProgress) return;
     _autoSaveInProgress = true;
+    const gen = _sessionGen;
+    let savedId = null;
     let _finishAutoSave;
     _autoSaveDone = new Promise(r => { _finishAutoSave = r; });
 
@@ -2959,12 +3038,15 @@ async function autoSaveSession() {
             sri: sriScore,
             sriComponents: { ...sriComponents },
             peakHR: peakHR,
+            calibrationSecs: sessionCalibrationSecs,
             subjectId:    currentSubjectId,
             subjectName:  currentSubjectName,
             protocolId:   activeProtocol?.id   ?? null,
             protocolName: activeProtocol?.name ?? null
         }, currentSessionId);
 
+        savedId = sessionId;
+        if (gen !== _sessionGen) return;   // reset / new connection meanwhile: that record is finished
         _lastAutoSaveId = sessionId;
         if (!currentSessionId) {
             currentSessionId = sessionId;
@@ -2978,7 +3060,7 @@ async function autoSaveSession() {
         console.error('Auto-save failed:', error);
     } finally {
         _autoSaveInProgress = false;
-        _finishAutoSave();
+        _finishAutoSave({ id: savedId, gen });
     }
 }
 
@@ -3094,11 +3176,11 @@ async function renderHistory() {
                     <div class="session-info">
                         <div class="session-date">${formatDate(session.date)}</div>
                         <div class="session-time">Duration: ${formatDuration(session.duration)}</div>
-                        <div class="session-filename">${session.filename || 'polar-h10-data'}</div>
-                        ${session.subjectName && session.subjectName !== 'Anonymous' ? `<div class="session-subject-chip">👤 ${session.subjectName}</div>` : ''}
+                        <div class="session-filename">${escapeHTML(session.filename || 'polar-h10-data')}</div>
+                        ${session.subjectName && session.subjectName !== 'Anonymous' ? `<div class="session-subject-chip">👤 ${escapeHTML(session.subjectName)}</div>` : ''}
                         ${session.tags && session.tags.length > 0 ? `
                             <div class="session-tags">
-                                ${session.tags.map(tag => `<span class="session-tag">${tag}</span>`).join('')}
+                                ${session.tags.map(tag => `<span class="session-tag">${escapeHTML(tag)}</span>`).join('')}
                             </div>
                         ` : ''}
                     </div>
@@ -3115,14 +3197,14 @@ async function renderHistory() {
                     <div class="session-stat">
                         <div class="session-stat-label">Avg RR</div>
                         <div class="session-stat-value">
-                            ${session.stats.avgRR ? session.stats.avgRR.toFixed(1) : '--'}
+                            ${sessionMetrics(session)?.mean_rr ? sessionMetrics(session).mean_rr.toFixed(1) : '--'}
                             <span class="session-stat-unit">ms</span>
                         </div>
                     </div>
                     <div class="session-stat">
                         <div class="session-stat-label">RMSSD</div>
                         <div class="session-stat-value">
-                            ${session.stats.rmssd ? session.stats.rmssd.toFixed(1) : '--'}
+                            ${sessionMetrics(session)?.rmssd ? sessionMetrics(session).rmssd.toFixed(1) : '--'}
                             <span class="session-stat-unit">ms</span>
                         </div>
                     </div>
@@ -3159,8 +3241,7 @@ async function renderHistory() {
         document.querySelectorAll('.session-action-btn.delete').forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                if (confirm('Delete this session?')) {
-                    await deleteSession(parseInt(btn.dataset.id));
+                if (await confirmAndDeleteSession(parseInt(btn.dataset.id))) {
                     await renderHistory();
                     await updateHistoryBadge();
                 }
@@ -3191,19 +3272,19 @@ async function renderHistoryTable() {
                            : session.sri >= 35 ? 'sri-fair'
                            : session.sri > 0  ? 'sri-poor' : '';
             const tagsHtml = session.tags?.length
-                ? session.tags.map(t => `<span class="session-tag">${t}</span>`).join('')
+                ? session.tags.map(t => `<span class="session-tag">${escapeHTML(t)}</span>`).join('')
                 : '<span style="color:var(--text-tertiary)">—</span>';
 
             return `
             <tr class="table-row" data-id="${session.id}">
                 <td><input type="checkbox" class="row-select" data-id="${session.id}"></td>
                 <td class="table-date">${formatDate(session.date)}</td>
-                <td class="table-name">${session.filename || 'polar-h10-data'}</td>
-                <td>${session.subjectName && session.subjectName !== 'Anonymous' ? `<span class="session-subject-chip">👤 ${session.subjectName}</span>` : '<span style="color:var(--text-tertiary)">—</span>'}</td>
+                <td class="table-name">${escapeHTML(session.filename || 'polar-h10-data')}</td>
+                <td>${session.subjectName && session.subjectName !== 'Anonymous' ? `<span class="session-subject-chip">👤 ${escapeHTML(session.subjectName)}</span>` : '<span style="color:var(--text-tertiary)">—</span>'}</td>
                 <td>${formatDuration(session.duration)}</td>
                 <td>${session.stats.samples}</td>
-                <td>${session.stats.avgRR ? session.stats.avgRR.toFixed(1) + ' ms' : '—'}</td>
-                <td>${session.stats.rmssd ? session.stats.rmssd.toFixed(1) + ' ms' : '—'}</td>
+                <td>${sessionMetrics(session)?.mean_rr ? sessionMetrics(session).mean_rr.toFixed(1) + ' ms' : '—'}</td>
+                <td>${sessionMetrics(session)?.rmssd ? sessionMetrics(session).rmssd.toFixed(1) + ' ms' : '—'}</td>
                 <td class="sri-el ${sriClass}" style="font-weight:700;">${session.sri > 0 ? session.sri : '—'}</td>
                 <td>${session.eventMarkers?.length || 0}</td>
                 <td>${tagsHtml}</td>
@@ -3231,8 +3312,7 @@ async function renderHistoryTable() {
         historyTableBody.querySelectorAll('.tbl-btn.delete').forEach(btn => {
             btn.addEventListener('click', async e => {
                 e.stopPropagation();
-                if (confirm('Delete this session?')) {
-                    await deleteSession(parseInt(btn.dataset.id));
+                if (await confirmAndDeleteSession(parseInt(btn.dataset.id))) {
                     await renderHistoryTable();
                     await updateHistoryBadge();
                 }
@@ -3245,7 +3325,7 @@ async function renderHistoryTable() {
                 const session = await loadSession(id);
                 const newName = prompt('Rename session:', session.filename || 'polar-h10-data');
                 if (newName !== null && newName.trim()) {
-                    await saveSession({ ...session, filename: newName.trim() }, id);
+                    await updateSession(id, { filename: newName.trim() });
                     await renderHistoryTable();
                 }
             });
@@ -3279,6 +3359,7 @@ async function restoreSession(id) {
             timestamps = cleaned.times;
         }
 
+        calibrationStartTime = null;          // exports / report must use the restored session's own start
         lastCWTResult = null;                 // never reuse another session's CWT for LF/HF
         _cwtLastUpdate = 0;                   // and let the spectrogram redraw immediately
         switchTab('record');                  // show the Record tab BEFORE drawing into its charts
@@ -3287,6 +3368,7 @@ async function restoreSession(id) {
         sessionAnnotations = session.annotations || [];
         sessionTags = session.tags || [];
         sessionStartTime = session.startTime || session.timestamp;
+        sessionCalibrationSecs = session.calibrationSecs ?? null;
 
         // Calculate or restore SRI using the SAME function
         const sriResult = appSettings.showSRI === false ? null : calculateSRI(rrIntervals, timestamps);
@@ -3298,12 +3380,7 @@ async function restoreSession(id) {
             // If session didn't have SRI, save it now
             if (!session.sri || session.sri === 0) {
                 console.log(`✓ SRI calculated for historical session: ${sriScore}`);
-                await saveSession({
-                    ...session,
-                    sri: sriScore,
-                    sriComponents: sriComponents,
-                    peakHR: peakHR
-                }, session.id);
+                await updateSession(session.id, { sri: sriScore, sriComponents, peakHR });
             }
         } else {
             sriScore = 0;
@@ -3343,34 +3420,9 @@ async function downloadSession(id) {
         const sessionDate = new Date(session.startTime || session.timestamp);
         const dateStr = sessionDate.toISOString().slice(0, 16);
         const tagsStr = session.tags && session.tags.length > 0 ? '_' + session.tags.join('-') : '';
-        const filename = `${session.filename || 'polar-h10'}_${dateStr}${tagsStr}`;
+        const filename = `${session.filename || 'polar-h10'}_${dateStr}${tagsStr}`.replace(/[\\/:*?"<>|]+/g, '-');
 
-        let csv = '';
-
-        // Add unified metadata header
-        csv += generateMetadataHeader({
-            filename: session.filename,
-            startTime: session.startTime,
-            tags: session.tags || [],
-            rrCount: session.rrIntervals.length,
-            rawRRCount: session.rawRRIntervals?.length || session.rrIntervals.length,
-            eventCount: session.eventMarkers?.length || 0,
-            sessionTimestamps: session.timestamps,
-            sessionEventMarkers: session.eventMarkers || [],
-            includeRaw: false // Downloaded sessions are always cleaned data
-        });
-
-        // Add data header
-        csv += 'Timestamp (s),RR Interval (ms),Event Type,Annotation\n';
-
-        for (let i = 0; i < session.rrIntervals.length; i++) {
-            const timestamp = session.timestamps[i];
-            const rr = session.rrIntervals[i];
-            const event = session.eventMarkers?.find(e => Math.abs(e.time - timestamp) < 0.5);
-            const eventType = event ? event.type || '' : '';
-            const annotation = event ? (event.annotation || '').replace(/,/g, ';') : ''; // Escape commas
-            csv += `${timestamp.toFixed(3)},${rr.toFixed(3)},${eventType},${annotation}\n`;
-        }
+        const csv = storedSessionCSV(session);   // stored sessions are always exported as clean data
 
         // Use robust download function
         downloadFile(csv, `${filename}.csv`, 'text/csv');
@@ -3391,12 +3443,13 @@ async function bulkDownloadSessions(filterOverrides = {}) {
 
     try {
         const zip = new JSZip();
+        const usedNames = new Set();
 
         for (const session of filtered) {
             const sessionDate = new Date(session.startTime || session.timestamp);
             const dateStr = sessionDate.toISOString().slice(0, 16);
             const tagsStr = session.tags?.length ? '_' + session.tags.join('-') : '';
-            const baseName = `${session.filename || 'polar-h10'}_${dateStr}${tagsStr}`;
+            const baseName = uniqueZipName(usedNames, `${session.filename || 'polar-h10'}_${dateStr}${tagsStr}`);
 
             let content, ext;
 
@@ -3404,24 +3457,7 @@ async function bulkDownloadSessions(filterOverrides = {}) {
                 content = session.rrIntervals.map(rr => rr.toFixed(3)).join('\n');
                 ext = 'txt';
             } else { // csv (default)
-                let csv = generateMetadataHeader({
-                    filename: session.filename,
-                    startTime: session.startTime,
-                    tags: session.tags || [],
-                    rrCount: session.rrIntervals.length,
-                    rawRRCount: session.rawRRIntervals?.length || session.rrIntervals.length,
-                    eventCount: session.eventMarkers?.length || 0,
-                    sessionTimestamps: session.timestamps, sessionEventMarkers: session.eventMarkers || [],
-                    includeRaw: false
-                });
-                csv += 'Timestamp (s),RR Interval (ms),Event Type,Annotation\n';
-                for (let i = 0; i < session.rrIntervals.length; i++) {
-                    const ts = session.timestamps[i];
-                    const rr = session.rrIntervals[i];
-                    const ev = session.eventMarkers?.find(e => Math.abs(e.time - ts) < 0.5);
-                    csv += `${ts.toFixed(3)},${rr.toFixed(3)},${ev?.type || ''},${(ev?.annotation || '').replace(/,/g, ';')}\n`;
-                }
-                content = csv;
+                content = storedSessionCSV(session);
                 ext = 'csv';
             }
 
@@ -3462,9 +3498,9 @@ function closeEventTypePanel() {
 function addEventMarker() {
     if (!isConnected) return;
 
-    const currentTime = calibrationStartTime
-        ? (Date.now() - calibrationStartTime) / 1000
-        : 0;
+    // Same time reference as RR / ECG: negative while still calibrating
+    const ref = calibrationStartTime ?? calibrationEndTime;
+    const currentTime = ref ? (Date.now() - ref) / 1000 : 0;
     const annotation = eventAnnotation.value.trim();
 
     const marker = {
@@ -3495,7 +3531,7 @@ function renderAnnotations() {
     annotationsList.innerHTML = sessionAnnotations.map((ann, idx) => `
         <div class="annotation-item">
             <span class="annotation-time">${ann.time.toFixed(1)}s</span>
-            <span class="annotation-text">${ann.type}${ann.annotation ? ': ' + ann.annotation : ''}</span>
+            <span class="annotation-text">${escapeHTML(ann.type)}${ann.annotation ? ': ' + escapeHTML(ann.annotation) : ''}</span>
             <button class="annotation-delete" data-idx="${idx}">✕</button>
         </div>
     `).join('');
@@ -3933,6 +3969,7 @@ async function performSessionReset(showConfirm = true) {
     timestamps = [];
     rawRRIntervals = [];
     rawTimestamps = [];
+    _rrRun = [];
     eventMarkers = [];
     sessionAnnotations = [];
     sessionTags = [];
@@ -3949,6 +3986,7 @@ async function performSessionReset(showConfirm = true) {
     // Reset session variables
     sessionStartTime = Date.now();
     currentSessionId = null;
+    _sessionGen++;
     if (!isConnected) {
         // Nothing is streaming: no baseline until the next connect() finishes calibrating
         calibrationStartTime = null;
@@ -4078,11 +4116,14 @@ async function connect() {
         isConnected = true;
         sessionStartTime = Date.now();
         currentSessionId = null;
+        _sessionGen++;
         lastPacketTime = Date.now();
 
         // Start calibration period
+        _rrRun = [];
         isCalibrating = true;
-        calibrationEndTime = Date.now() + (appSettings.calibrationSecs || 8) * 1000;
+        sessionCalibrationSecs = appSettings.calibrationSecs || 8;
+        calibrationEndTime = Date.now() + sessionCalibrationSecs * 1000;
         calibrationStartTime = null; // Reset
         status.textContent = 'Calibrating...';
         status.classList.add('calibrating');
@@ -4101,7 +4142,7 @@ async function connect() {
                 updateModesAvailability();
                 broadcastMonitorUpdate();
             }
-        }, (appSettings.calibrationSecs || 8) * 1000);
+        }, sessionCalibrationSecs * 1000);
 
         startRecordingTimer();
         startSignalMonitor();
@@ -4118,6 +4159,8 @@ async function connect() {
     } catch (error) {
         console.error('Connection failed:', error);
         status.textContent = 'Connection Failed';
+        // A failure after gatt.connect() would otherwise leave the strap linked (and streaming) with no session
+        if (!isConnected && device?.gatt?.connected) { try { device.gatt.disconnect(); } catch (e) { /* ignore */ } }
     }
 }
 
@@ -4161,6 +4204,7 @@ function disconnect(skipConfirm = false) {
                     sri: sriScore,
                     sriComponents: { ...sriComponents },
                     peakHR: peakHR,
+                    calibrationSecs: sessionCalibrationSecs,
                     subjectId:    currentSubjectId,
                     subjectName:  currentSubjectName,
                     protocolId:   activeProtocol?.id   ?? null,
@@ -4168,11 +4212,16 @@ function disconnect(skipConfirm = false) {
                 };
                 // If the very first auto-save is still in flight, wait for it and update ITS record
                 // instead of creating a duplicate session.
-                const pending = _autoSaveInProgress ? _autoSaveDone : Promise.resolve();
-                pending.then(() => saveSession(finalPayload, finalSid || _lastAutoSaveId)).then(() => {
+                // Only an auto-save of THIS recording (same generation) may give the record id.
+                const gen = _sessionGen;
+                const pending = _autoSaveInProgress ? _autoSaveDone : Promise.resolve({ id: _lastAutoSaveId, gen });
+                pending.then(r => saveSession(finalPayload, finalSid || (r && r.gen === gen ? r.id : null))).then(() => {
                     _lastAutoSaveId = null;
                     console.log('✓ Session saved to history');
                     updateHistoryBadge();
+                }).catch(err => {
+                    console.error('Final save failed:', err);
+                    alert('The session could not be saved to history (' + (err && err.message || err) + '). Export it before closing the page.');
                 });
             }
             if (device.gatt.connected) device.gatt.disconnect();
@@ -4181,12 +4230,15 @@ function disconnect(skipConfirm = false) {
         currentSessionId = null;
         isCalibrating = false;
         calibrationEndTime = null;
+        calibrationStartTime = null;   // the final-save payload above already holds it; a stale value
+                                       // would date later exports of restored sessions with this recording
         stopRecordingTimer();
 
         rrIntervals = [];
         timestamps = [];
         rawRRIntervals = [];
         rawTimestamps = [];
+        _rrRun = [];
         eventMarkers = [];
 
         sessionAnnotations = [];
@@ -4342,8 +4394,10 @@ function flashStatCards() {
 // Handle HR data
 function handleHRData(event) {
     const value = event.target.value;
+    if (value.byteLength < 2) return;
     const flags = value.getUint8(0);
     const hrFormat = flags & 0x01;
+    if (hrFormat && value.byteLength < 3) return;
     let hr = hrFormat === 0 ? value.getUint8(1) : value.getUint16(1, true);
 
     currentHR = hr;
@@ -4354,26 +4408,30 @@ function handleHRData(event) {
     const rrPresent = flags & 0x10;
     if (rrPresent) {
       let offset = hrFormat === 0 ? 2 : 3;
-      while (offset < value.byteLength) {
-            const rr = value.getUint16(offset, true) / 1024 * 1000;
+      if (flags & 0x08) offset += 2;               // Energy Expended field precedes the RR values
+      const packetRR = [];
+      while (offset + 1 < value.byteLength) {       // ignore a malformed trailing byte
+            packetRR.push(value.getUint16(offset, true) / 1024 * 1000);
+            offset += 2;
+        }
 
-            // Only process and store data AFTER calibration completes
-            if (!isCalibrating && calibrationStartTime) {
-                const timestamp = (Date.now() - calibrationStartTime) / 1000;
-
+        // Only process and store data AFTER calibration completes
+        if (!isCalibrating && calibrationStartTime && packetRR.length) {
+            const beatTimes = packetBeatTimes(packetRR, (Date.now() - calibrationStartTime) / 1000,
+                rawTimestamps.length ? rawTimestamps[rawTimestamps.length - 1] : 0);
+            packetRR.forEach((rr, k) => {
+                const timestamp = beatTimes[k];
                 // Store raw data (everything that arrives post-calibration)
                 rawRRIntervals.push(rr);
                 rawTimestamps.push(timestamp);
 
-                // Store cleaned data (validated intervals only)
+                // Store cleaned data (validated intervals only, with re-anchoring)
                 const lastRR = rrIntervals.length > 0 ? rrIntervals[rrIntervals.length - 1] : null;
-                if (isValidRRInterval(rr, lastRR)) {
-                    rrIntervals.push(rr);
-                    timestamps.push(timestamp);
+                for (const b of rrFilterStep(rr, timestamp, lastRR, _rrRun)) {
+                    rrIntervals.push(b.rr);
+                    timestamps.push(b.t);
                 }
-            }
-
-            offset += 2;
+            });
         }
 
         // Update stats and charts only after calibration
@@ -4390,7 +4448,42 @@ function handleHRData(event) {
     }
 }
 
-// Validate individual RR interval in real-time
+// Artifact filter with re-anchoring.
+// Rule 1 (unchanged): 250-2000 ms and |RR - preceding accepted RR| <= threshold.
+// Rule 2 (re-anchoring): REANCHOR_BEATS consecutive in-range intervals that fail rule 1 only because of the
+// difference to the last accepted one, but agree with EACH OTHER within the threshold, are a level change
+// (or a wrong reference beat), not artifacts: they are all accepted and become the new reference.
+// Without rule 2, one plausible-but-wrong accepted interval made every later normal beat fail (lock-out).
+// Isolated ectopic beats (short-long pairs) never form such a run, so they are still rejected.
+
+// One filter step. `lastRR` = last accepted RR (or null); `run` = pending run (mutated).
+// Returns the beats to append to the clean stream, in order (0, 1 or REANCHOR_BEATS of them).
+function rrFilterStep(rr, t, lastRR, run) {
+    const maxDiff = appSettings.artifactThreshold || 300;
+    if (rr < 250 || rr > 2000 || !isFinite(t)) { run.length = 0; return []; }
+    if (lastRR === null || Math.abs(rr - lastRR) <= maxDiff) { run.length = 0; return [{ rr, t }]; }
+    if (run.length && Math.abs(rr - run[run.length - 1].rr) > maxDiff) run.length = 0;
+    run.push({ rr, t });
+    if (run.length < REANCHOR_BEATS) return [];
+    const accepted = run.slice();
+    run.length = 0;
+    return accepted;
+}
+
+// Beat times for the RR values of ONE notification. A notification may carry several intervals but has a
+// single arrival time: the last beat is dated at arrival and each earlier one by subtracting the intervals that
+// follow it (cumulative RR), instead of giving them all the same stamp. Times never go below the previous
+// beat's time (BLE latency / jitter) nor below 0 (beats that ended before calibration finished).
+function packetBeatTimes(rrMs, arrivalT, prevT = 0) {
+    const t = new Array(rrMs.length);
+    let acc = arrivalT;
+    for (let k = rrMs.length - 1; k >= 0; k--) { t[k] = acc; acc -= rrMs[k] / 1000; }
+    let floor = Math.max(0, prevT);
+    for (let k = 0; k < t.length; k++) { if (t[k] < floor) t[k] = floor; floor = t[k]; }
+    return t;
+}
+
+// Validate individual RR interval in real-time (rule 1 only)
 function isValidRRInterval(rr, lastRR = null) {
     const minRR = 250;  // 240 BPM max (60000 / 250)
     const maxRR = 2000; // 30 BPM min
@@ -5261,6 +5354,56 @@ function updateVagalProxyChart() {
     Plotly.update('vagalProxyChart', { x: [vx], y: [vy] }, { shapes, annotations }, [0]);
 }
 
+// ── CSV helpers (one implementation for every RR export) ─────────────────
+// RFC 4180 field: quote when it contains a comma, quote or line break
+// File-name-safe stem, unique within one ZIP (equal names used to overwrite each other)
+function uniqueZipName(used, stem) {
+    const clean = String(stem).replace(/[\\/:*?"<>|]+/g, '-');
+    let name = clean, k = 2;
+    while (used.has(name)) name = `${clean}_${k++}`;
+    used.add(name);
+    return name;
+}
+function csvField(v) {
+    if (v == null) return '';
+    const str = String(v);
+    return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+// Each event is written on the beat nearest to its time, so no event is lost or written twice
+function eventsByBeat(times, events) {
+    const map = new Map();
+    if (!times || !times.length) return map;
+    for (const e of events || []) {
+        if (!e || !Number.isFinite(e.time)) continue;
+        let lo = 0, hi = times.length - 1;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] < e.time) lo = mid + 1; else hi = mid; }
+        if (lo > 0 && Math.abs(times[lo - 1] - e.time) <= Math.abs(times[lo] - e.time)) lo--;
+        if (!map.has(lo)) map.set(lo, []);
+        map.get(lo).push(e);
+    }
+    return map;
+}
+function rrCsvBody(rr, times, events) {
+    const ev = eventsByBeat(times, events);
+    const lines = ['Timestamp (s),RR Interval (ms),Event Type,Annotation'];
+    for (let i = 0; i < rr.length; i++) {
+        const es = ev.get(i) || [];
+        lines.push(`${times[i].toFixed(3)},${rr[i].toFixed(3)},${csvField(es.map(e => e.type || '').join(' | '))},${csvField(es.map(e => e.annotation || '').join(' | ').replace(/^( \| )+$/, ''))}`);
+    }
+    return lines.join('\n') + '\n';
+}
+// Complete CSV (metadata header + clean RR series) of a STORED session
+function storedSessionCSV(s) {
+    return generateMetadataHeader({
+        filename: s.filename, startTime: s.startTime || s.timestamp,
+        tags: s.tags || [], rrCount: s.rrIntervals.length,
+        rawRRCount: s.rawRRIntervals?.length || s.rrIntervals.length,
+        eventCount: s.eventMarkers?.length || 0, includeRaw: false,
+        calibrationSecs: s.calibrationSecs,
+        sessionTimestamps: s.timestamps, sessionEventMarkers: s.eventMarkers || []
+    }) + rrCsvBody(s.rrIntervals, s.timestamps, s.eventMarkers);
+}
+
 function generateMetadataHeader(sessionData) {
     const {
         filename = 'polar-h10-data',
@@ -5271,6 +5414,8 @@ function generateMetadataHeader(sessionData) {
         eventCount = eventMarkers.length,
         includeRaw = false
     } = sessionData;
+    // Calibration actually used: the stored session's own value, or the live recording's
+    const calibSecs = sessionData.live ? sessionCalibrationSecs : sessionData.calibrationSecs;
 
     const sessionDate = new Date(startTime);
     const dateStr = sessionDate.toISOString().slice(0, 19).replace('T', ' ');
@@ -5303,7 +5448,9 @@ function generateMetadataHeader(sessionData) {
     header += `# Total RR Intervals: ${includeRaw ? rawRRCount : rrCount}\n`;
     header += `# Valid Intervals: ${rrCount} (${percentValid}%)\n`;
     header += `# Removed Artifacts: ${removedRR}\n`;
-    header += `# Calibration Period: ${CALIBRATION_DURATION / 1000} seconds (excluded from data)\n`;
+    header += calibSecs != null
+        ? `# Calibration Period: ${calibSecs} seconds (excluded from data)\n`
+        : `# Calibration Period: not recorded (session saved by an older version)\n`;
     header += `#\n`;
     header += `# Events\n`;
     header += `# Total Events: ${eventCount}\n`;
@@ -5366,8 +5513,8 @@ async function generatePDFReport() {
 
         const hrVals = rrIntervals.map(rr => 60000 / rr);
         const avgHR  = hrVals.reduce((a, b) => a + b, 0) / hrVals.length;
-        const minHR  = Math.min(...hrVals);
-        const maxHR  = Math.max(...hrVals);
+        const minHR  = hrVals.reduce((a, b) => Math.min(a, b), Infinity);
+        const maxHR  = hrVals.reduce((a, b) => Math.max(a, b), -Infinity);
 
         const cwtRep    = (lastCWTResult && lastCWTResult.dataLength === rrIntervals.length)
                           ? lastCWTResult
@@ -5409,14 +5556,14 @@ async function generatePDFReport() {
             ? eventMarkers.map(e => `
               <tr>
                 <td class="vc">${fmt(e.time, 1)}</td>
-                <td>${e.type || '—'}</td>
-                <td>${e.annotation || '—'}</td>
+                <td>${escapeHTML(e.type || '—')}</td>
+                <td>${escapeHTML(e.annotation || '—')}</td>
               </tr>`).join('')
             : `<tr><td colspan="3" style="text-align:center;color:#8a9bb8;padding:16px">No events recorded</td></tr>`;
 
         // Tags
         const tagsHtml = sessionTags.length > 0
-            ? sessionTags.map(t => `<span class="tag">${t}</span>`).join('')
+            ? sessionTags.map(t => `<span class="tag">${escapeHTML(t)}</span>`).join('')
             : '<span style="color:#8a9bb8">None</span>';
 
         // ── Build HTML ───────────────────────────────────────────────────────
@@ -5425,7 +5572,7 @@ async function generatePDFReport() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CardioTrace Report — ${sessionName}</title>
+<title>CardioTrace Report — ${escapeHTML(sessionName)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -5577,13 +5724,13 @@ body{font-family:'Inter',system-ui,sans-serif;font-size:13px;color:var(--ink);
 <div class="rh">
   <div class="rh-eyebrow">❤️ CardioTrace · Cardiac Autonomic Function Report</div>
   <div class="rh-title">Heart Rate Variability Analysis</div>
-  <div class="rh-sub">${sessionName}</div>
+  <div class="rh-sub">${escapeHTML(sessionName)}</div>
   <div class="rh-pills">
     <div class="rh-pill">Date<strong>${sessionDate.toLocaleString('en-US',{dateStyle:'medium',timeStyle:'short'})}</strong></div>
     <div class="rh-pill">Duration<strong>${fmtD(duration)}</strong></div>
     <div class="rh-pill">RR Intervals<strong>${rrIntervals.length.toLocaleString()}</strong></div>
     <div class="rh-pill">Data Quality<strong>${dquality}%</strong></div>
-    ${sessionTags.length ? `<div class="rh-pill">Tags<strong>${sessionTags.join(', ')}</strong></div>` : ''}
+    ${sessionTags.length ? `<div class="rh-pill">Tags<strong>${escapeHTML(sessionTags.join(', '))}</strong></div>` : ''}
     <div class="rh-pill">Generated<strong>${new Date().toLocaleString('en-US',{dateStyle:'medium',timeStyle:'short'})}</strong></div>
   </div>
 </div>
@@ -5607,7 +5754,7 @@ ${reportOn('kpis') ? `<div class="kpi-row">
   <div class="kpi" style="--kpi-accent:#6366f1">
     <div class="kpi-label">RMSSD</div>
     <div class="kpi-value">${fmt(rmssd)}</div>
-    <div class="kpi-unit">ms · 1-min window</div>
+    <div class="kpi-unit">ms · whole recording</div>
   </div>
   <div class="kpi" style="--kpi-accent:#ec4899">
     <div class="kpi-label">LF / HF Ratio</div>
@@ -5662,7 +5809,7 @@ ${(imgRR || imgRMSSD) ? `<div class="sec">
     <img src="${imgRR}" alt="RR Intervals chart">
   </div>` : ''}
   ${imgRMSSD ? `<div class="chart-card">
-    <div class="chart-card-label">Rolling RMSSD — 1-minute sliding window</div>
+    <div class="chart-card-label">Rolling RMSSD — ${appSettings.rmssdWindow || 60}-s sliding window</div>
     <img src="${imgRMSSD}" alt="Rolling RMSSD chart">
   </div>` : ''}
 </div>` : ''}
@@ -5673,7 +5820,7 @@ ${(imgPSD || imgPoincare || reportOn('notes')) ? `<div class="sec">
   ${(imgPSD || imgPoincare) ? `<div class="charts-2col">
     ${imgPSD ? `<div class="chart-card">
       <div class="chart-card-label">HRV Wavelet Spectrogram — Morlet CWT (ω₀ = 6, 4 Hz interpolation, Plasma colorscale = log₁₀ power)</div>
-      <img src="${imgPSD}" alt="Power Spectral Density chart">
+      <img src="${imgPSD}" alt="Wavelet spectrogram">
     </div>` : ''}
     ${imgPoincare ? `<div class="chart-card">
       <div class="chart-card-label">Poincaré Plot — RR(n) vs RR(n+1)</div>
@@ -5687,7 +5834,7 @@ ${(imgPSD || imgPoincare || reportOn('notes')) ? `<div class="sec">
   </div>` : ''}
   ${reportOn('notes') ? `<div class="note">
     <strong>Band legend:</strong> VLF 0.003–0.04 Hz · LF 0.04–0.15 Hz · HF 0.15–0.4 Hz.
-    Spectrogram computed via Morlet CWT (ω₀ = 6) on RR series linearly interpolated to 4 Hz; colour = log₁₀(power). Dashed lines mark LF boundary (0.04 Hz, indigo) and HF boundary (0.15 Hz, pink). Band powers integrated from time-averaged scalogram.
+    Spectrogram computed via Morlet CWT (ω₀ = 6) on the RR series resampled to 4 Hz by monotone cubic (PCHIP) interpolation, most recent ≤ 5 min; colour = log₁₀(power). Dotted lines mark the LF (0.04 Hz) and HF (0.15 Hz) boundaries. Band powers integrated from the time-averaged scalogram.
     Poincaré SD1 reflects short-term (parasympathetic) variability; SD2 reflects long-term variability.
   </div>` : ''}
 </div>` : ''}
@@ -5700,7 +5847,7 @@ ${(imgHR || imgVagal) ? `<div class="sec">
     <img src="${imgHR}" alt="Heart Rate chart">
   </div>` : ''}
   ${imgVagal ? `<div class="chart-card">
-    <div class="chart-card-label">Vagal Proxy (RMSSD/SDNN) — 1-minute rolling window · Values > 0.5 favour parasympathetic dominance</div>
+    <div class="chart-card-label">Vagal Proxy (RMSSD/SDNN) — ${appSettings.rmssdWindow || 60}-s rolling window · Values &gt; 0.5 favour parasympathetic dominance</div>
     <img src="${imgVagal}" alt="Vagal Proxy chart">
   </div>` : ''}
 </div>` : ''}
@@ -5788,10 +5935,10 @@ ${reportOn('metadata') ? `<!-- ── SESSION METADATA ────────�
   <div class="sec-title"><span class="sec-title-bar"></span><span class="sec-title-text">Session Metadata</span></div>
   <table class="ev-table">
     <tbody>
-      <tr><th style="width:180px">Session Name</th><td>${sessionName}</td></tr>
+      <tr><th style="width:180px">Session Name</th><td>${escapeHTML(sessionName)}</td></tr>
       <tr><th>Start Time</th><td>${sessionDate.toLocaleString('en-US',{dateStyle:'full',timeStyle:'medium'})}</td></tr>
       <tr><th>Duration</th><td>${fmtD(duration)}</td></tr>
-      <tr><th>Calibration Period</th><td>${CALIBRATION_DURATION / 1000} seconds (excluded from data)</td></tr>
+      <tr><th>Calibration Period</th><td>${sessionCalibrationSecs != null ? sessionCalibrationSecs + ' seconds (excluded from data)' : 'not recorded'}</td></tr>
       <tr><th>Raw RR Intervals</th><td>${rawRRIntervals.length.toLocaleString()}</td></tr>
       <tr><th>Valid (Clean) Intervals</th><td>${rrIntervals.length.toLocaleString()} (${dquality}%)</td></tr>
       <tr><th>Artifacts Removed</th><td>${Math.max(0, rawRRIntervals.length - rrIntervals.length).toLocaleString()}</td></tr>
@@ -5896,7 +6043,7 @@ function exportData() {
     const dateStr = sessionDate.toISOString().slice(0, 16); // YYYY-MM-DD
     const tagsStr = sessionTags.length > 0 ? '_' + sessionTags.join('-') : '';
     const dataType = includeRaw ? '_raw' : '_clean';
-    const filename = `${baseFilename}_${dateStr}${tagsStr}${dataType}`;
+    const filename = `${baseFilename}_${dateStr}${tagsStr}${dataType}`.replace(/[\\/:*?"<>|]+/g, '-');
 
     // Select which data to export
     const exportRR = includeRaw ? rawRRIntervals : rrIntervals;
@@ -5924,19 +6071,7 @@ function exportData() {
             eventCount: eventMarkers.length,
             live: true,
             includeRaw: includeRaw
-        });
-
-        // Add data header
-        content += 'Timestamp (s),RR Interval (ms),Event Type,Annotation\n';
-
-        for (let i = 0; i < exportRR.length; i++) {
-            const timestamp = exportTimes[i];
-            const rr = exportRR[i];
-            const event = eventMarkers.find(e => Math.abs(e.time - timestamp) < 0.5);
-            const eventType = event ? event.type || '' : '';
-            const annotation = event ? (event.annotation || '').replace(/,/g, ';') : ''; // Escape commas
-            content += `${timestamp.toFixed(3)},${rr.toFixed(3)},${eventType},${annotation}\n`;
-        }
+        }) + rrCsvBody(exportRR, exportTimes, eventMarkers);
 
         mimeType = 'text/csv';
         fileExtension = '.csv';
@@ -5981,18 +6116,7 @@ async function copyToClipboard() {
             eventCount: eventMarkers.length,
             live: true,
             includeRaw: includeRaw
-        });
-
-        content += 'Timestamp (s),RR Interval (ms),Event Type,Annotation\n';
-
-        for (let i = 0; i < exportRR.length; i++) {
-            const timestamp = exportTimes[i];
-            const rr = exportRR[i];
-            const event = eventMarkers.find(e => Math.abs(e.time - timestamp) < 0.5);
-            const eventType = event ? event.type || '' : '';
-            const annotation = event ? (event.annotation || '').replace(/,/g, ';') : '';
-            content += `${timestamp.toFixed(3)},${rr.toFixed(3)},${eventType},${annotation}\n`;
-        }
+        }) + rrCsvBody(exportRR, exportTimes, eventMarkers);
     }
 
     try {
@@ -6474,7 +6598,14 @@ function initReportOptions() {
         initChartTools();
         initReportOptions();
 
-        await initDB();
+        try {
+            await initDB();
+        } catch (e) {
+            // Blocked storage / some private modes: keep the app usable (live view, exports), say what is missing
+            console.error('IndexedDB unavailable:', e);
+            alert('Session history is not available in this browser (storage is blocked or disabled). ' +
+                  'You can still record, but sessions are NOT saved automatically: export each recording before closing the page.');
+        }
         await updateHistoryBadge();
         loadTheme();
         updateChartThemes();            // also applies per-plot customisation

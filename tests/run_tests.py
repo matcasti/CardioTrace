@@ -259,6 +259,176 @@ def responsive_layout_without_overflow(b, base):
         a.close()
     check(not bad, f'0 overflowing elements in 50 size/tab combinations {bad[:3]}')
 
+# ───────────────────────────── Maintenance review (2026-11) ─────────────────────────────
+HR_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
+
+@test
+def stored_session_edits_keep_data(b, base):
+    "Renaming a stored session keeps its date and statistics; editing a subject keeps createdAt / notes"
+    a = App(b, base); p = a.open()
+    sid = p.evaluate(SESSION, {'n': 5, 'name': 'orig'})
+    before = p.evaluate(f"loadSession({sid})")
+    p.wait_for_timeout(50)
+    p.evaluate(f"updateSession({sid}, {{filename: 'renamed'}})")
+    after = p.evaluate(f"loadSession({sid})")
+    check(after['filename'] == 'renamed', 'rename applied')
+    check(after['stats'] == before['stats'] and after['date'] == before['date'] and after['timestamp'] == before['timestamp'],
+          f"stats and date unchanged by rename {after['stats']}")
+    r = p.evaluate("""async()=>{ const id = await saveSubject({name:'Ana',age:30,createdAt:'2020-01-01T00:00:00.000Z',notes:'n'});
+        document.getElementById('editSubjectId').value=id; document.getElementById('editSubjectName').value='Ana B';
+        document.getElementById('editSubjectAge').value='31'; await saveSubjectEdit(); return await loadSubject(id); }""")
+    check(r['name'] == 'Ana B' and r['createdAt'].startswith('2020') and r['notes'] == 'n', f'subject edit keeps createdAt/notes {r}')
+    a.close()
+
+@test
+def protocol_runner_edge_cases(b, base):
+    "Deleting the running protocol stops it cleanly; a finished protocol's banner cannot hide the next one"
+    a = App(b, base); p = a.open(); a.connect(1800)
+    p.evaluate("""async()=>{ window.confirm=()=>true; const id = await saveProtocol({name:'P',phases:[{name:'A',durationSecs:2,autoMark:true}]});
+        chooseProtocol(await loadProtocol(id)); await confirmDeleteProtocol(id); }""")
+    p.wait_for_timeout(3000)
+    check(not a.errors and not p.evaluate("protocolRunning"), f'no timer errors after deleting the running protocol {a.errors[:1]}')
+    p.evaluate("()=>{ chooseProtocol({id:'x',name:'Q',phases:[{name:'A',durationSecs:1}]}); }")
+    p.wait_for_timeout(2500)
+    p.evaluate("()=>{ chooseProtocol({id:'y',name:'R',phases:[{name:'B',durationSecs:60}]}); }")
+    p.wait_for_timeout(6000)
+    check(p.evaluate("protocolRunning && document.getElementById('protocolRunnerPanel').style.display !== 'none'"),
+          'runner of a new protocol stays visible after the previous completion banner times out'); a.close()
+
+@test
+def hr_packet_parsing(b, base):
+    "HR parser honours the Energy Expended flag and ignores a malformed trailing byte"
+    a = App(b, base); p = a.open(); a.connect(1800)
+    fire = f"""(bytes)=>{{ const c=__chars['{HR_UUID}']; c.value=new DataView(new Uint8Array(bytes).buffer); c.dispatchEvent(new Event('characteristicvaluechanged')); }}"""
+    u = round(0.8 * 1024)
+    p.evaluate(fire, [0x18, 70, 0x2C, 0x01, u & 255, u >> 8])
+    rr = p.evaluate("rawRRIntervals")
+    check(len(rr) == 1 and abs(rr[0] - 799.8) < 0.1, f'Energy Expended is not read as an RR interval {rr}')
+    p.evaluate(fire, [0x10, 70, u & 255, u >> 8, 0x01])
+    check(not a.errors and p.evaluate("rawRRIntervals.length") == 2, f'trailing byte ignored without error {a.errors[:1]}'); a.close()
+
+@test
+def export_metadata_and_csv_escaping(b, base):
+    "CSV header states the real calibration; annotations are RFC 4180 quoted; every event appears once; long sessions do not overflow"
+    a = App(b, base, settings={'calibrationSecs': 2}); p = a.open(); a.connect(3000)
+    for _ in range(5): p.evaluate("__ble.hr([800],70)"); p.wait_for_timeout(250)
+    hdr = p.evaluate("generateMetadataHeader({live:true})")
+    check('Calibration Period: 2 seconds' in hdr, 'live header uses the configured calibration (2 s)')
+    csv = p.evaluate("""()=>rrCsvBody([800,810,820],[1,2,3],[{time:1.1,type:'Note',annotation:'a, "b"\\nc'},{time:9,type:'Late',annotation:''}])""")
+    check('"a, ""b""\nc"' in csv and csv.count('Late') == 1 and csv.count('Note') == 1, f'quoted annotation, no lost or duplicated events: {csv!r}')
+    sid = p.evaluate(SESSION, {'n': 3, 'name': 'old'})
+    check('Calibration Period: not recorded' in p.evaluate(f"(async()=>storedSessionCSV(await loadSession({sid})))()"),
+          'stored session without calibration info is not given a made-up value')
+    check(p.evaluate("()=>{ try { computeSessionMetrics({rrIntervals:new Array(200000).fill(800)}); return true } catch(e) { return false } }"),
+          'session metrics on 200 000 beats do not overflow the stack'); a.close()
+
+@test
+def user_text_is_escaped(b, base):
+    "Names with quotes or markup render as text and stay selectable"
+    a = App(b, base); p = a.open()
+    p.evaluate("""async()=>{ await saveSubject({name:'Ana "La" <b>P</b>',age:40}); openSubjectPicker(); }""")
+    p.wait_for_timeout(300)
+    p.locator('#subjectPickerList .subject-option').nth(1).click(); p.wait_for_timeout(200)
+    check(p.evaluate("currentSubjectName") == 'Ana "La" <b>P</b>' and not a.errors, f'subject with quotes selectable {a.errors[:1]}')
+    p.evaluate(SESSION, {'n': 3, 'name': '<img src=x onerror=window.__xss=1>', 'tags': ['<i>t</i>']})
+    p.evaluate("switchTab('history')"); p.wait_for_timeout(400)
+    p.evaluate("switchTab('export')"); p.wait_for_timeout(400)
+    check(not p.evaluate("window.__xss") and p.evaluate("!document.querySelector('.session-card img, .export-session-name img, .session-tag i')"),
+          'session names and tags are not interpreted as HTML'); a.close()
+
+@test
+def restored_session_and_deletions(b, base):
+    "A restored session is dated by its own start; deleted subjects unassign sessions; the live session cannot be deleted"
+    a = App(b, base); p = a.open(); a.connect(1800)
+    for _ in range(4): p.evaluate("__ble.hr([800],70)"); p.wait_for_timeout(100)
+    p.evaluate("window.confirm=()=>true; window.alert=()=>{}; autoSaveSession()"); p.wait_for_timeout(400)
+    live = p.evaluate("currentSessionId")
+    p.evaluate(f"(async()=>{{ await confirmAndDeleteSession({live}); }})()")
+    sid = p.evaluate(SESSION, {'n': 3, 'name': 'other'})
+    p.evaluate("clearAllSessions()"); p.wait_for_timeout(300)
+    check(p.evaluate(DB_COUNT) == 1 and p.evaluate(f"loadSession({live}).then(s=>!!s)") and not p.evaluate(f"loadSession({sid}).then(s=>!!s)"),
+          'the session being recorded survives Delete and Delete-all; other sessions are removed')
+    p.evaluate("disconnect(true)"); p.wait_for_timeout(500)
+    old = p.evaluate(SESSION, {'n': 60, 'name': 'old'})
+    p.evaluate(f"restoreSession({old})"); p.wait_for_timeout(800)
+    check('# Date: 2026-01-02' in p.evaluate("generateMetadataHeader({live:true})"),
+          'export of a restored session is dated by that session, not by the previous live recording')
+    r = p.evaluate("""async()=>{ const id=await saveSubject({name:'Bo',age:40}); currentSubjectId=id; currentSubjectName='Bo';
+        const sid=await saveSession({startTime:Date.now(),filename:'s',rrIntervals:[800,800],timestamps:[1,2],eventMarkers:[],avgRR:800,rmssd:0});
+        await confirmDeleteSubject(id); return await loadSession(sid); }""")
+    check(r['subjectId'] is None and r['subjectName'] == 'Bo', f"deleting a subject unassigns its sessions {r['subjectId']}"); a.close()
+
+@test
+def events_during_calibration(b, base):
+    "An event marked during calibration gets a negative time on the RR clock, not 0"
+    a = App(b, base, settings={'calibrationSecs': 3}); p = a.open(); p.click('#connectBtn'); p.wait_for_timeout(600)
+    p.evaluate("addEventMarker()")
+    t = p.evaluate("eventMarkers[0].time")
+    check(-3 < t < -1, f'event time during calibration is negative ({t:.2f} s)'); a.close()
+
+@test
+def robustness_third_scan(b, base):
+    "Late auto-save after a reset; dates across midnight; whole-recording metrics in views; no IndexedDB; half-failed connect"
+    a = App(b, base); p = a.open(); a.connect(1800)
+    for _ in range(4): p.evaluate("__ble.hr([800],70)"); p.wait_for_timeout(50)
+    r = p.evaluate("""async()=>{ const orig = saveSession; window.saveSession = async (...x) => { await new Promise(r=>setTimeout(r,400)); return orig(...x); };
+        const pending = autoSaveSession(); await new Promise(r=>setTimeout(r,50));
+        await performSessionReset(false); await pending; window.saveSession = orig; return currentSessionId; }""")
+    check(r is None, f'an auto-save finishing after a reset does not re-attach the pre-reset record ({r})')
+    check(p.evaluate("""()=>{ const y=new Date(); y.setDate(y.getDate()-1); y.setHours(23,59,0,0); return formatDate(y.toISOString()).startsWith('Yesterday'); }"""),
+          'late yesterday is shown as "Yesterday", not "Today"')
+    m = p.evaluate("""async()=>{ const rr=[]; const ts=[]; let t=0; for(let i=0;i<120;i++){ const v=800+(i%2?50:-50); rr.push(v); t+=v/1000; ts.push(t);}
+        const id = await saveSession({startTime:Date.now(),filename:'w',rrIntervals:rr,timestamps:ts,eventMarkers:[],avgRR:800,rmssd:1});
+        switchTab('analyze'); switchAnalyzeSubtab('summary'); await new Promise(r=>setTimeout(r,400));
+        return { shown: document.getElementById('analyzeSummaryContent').innerText, whole: computeSessionMetrics(await loadSession(id)).rmssd }; }""")
+    check(f"{m['whole']:.1f} ms" in m['shown'], f"Analyze summary shows the whole-recording RMSSD ({m['whole']:.1f} ms)"); a.close()
+
+    a = App(b, base)
+    a.p.add_init_script("indexedDB.open = () => { const r = {}; setTimeout(() => { r.error = new DOMException('blocked'); r.onerror && r.onerror(); }, 0); return r; };")
+    p = a.open(1500)
+    check(p.evaluate("!!grid") and any('not available' in d for d in a.dialogs), 'without IndexedDB the app still initialises and warns the user')
+    for tab in ('history', 'analyze', 'subjects', 'export', 'record'): p.evaluate(f"switchTab('{tab}')"); p.wait_for_timeout(150)
+    check(not [e for e in a.errors if 'IndexedDB unavailable' not in e], f'all tabs render without storage {a.errors[:2]}'); a.close()
+
+    a = App(b, base); p = a.open()
+    p.evaluate("""()=>{ const orig = navigator.bluetooth.requestDevice; navigator.bluetooth.requestDevice = async (...x) => { const d = await orig(...x);
+        const c = d.gatt.connect; d.gatt.connect = async () => { const s = await c(); return { getPrimaryService: async u => { if (u.startsWith('0000180d')) throw new Error('boom'); return s.getPrimaryService(u); } }; }; window.__dev=d; return d; }; }""")
+    p.click('#connectBtn'); p.wait_for_timeout(800)
+    check(not p.evaluate("__dev.gatt.connected"), 'a connection that fails half-way closes the Bluetooth link'); a.close()
+
+@test
+def artifact_filter_reanchoring(b, base):
+    "One wrong reference beat no longer locks the filter; ectopic pairs are still rejected; live and batch agree"
+    a = App(b, base); p = a.open(); a.connect(1800)
+    p.evaluate("__ble.hr([1500],70)")
+    for _ in range(20): p.evaluate("__ble.hr([800,805],70)"); p.wait_for_timeout(20)
+    q = p.evaluate("({raw: rawRRIntervals.length, clean: rrIntervals.length})")
+    check(q['clean'] == q['raw'], f"after a wrong first beat the following 40 normal beats are kept ({q['clean']}/{q['raw']})")
+    clean = lambda rr: p.evaluate("(rr)=>cleanRRData(rr, rr.map((_,i)=>i)).rr", rr)
+    ect = clean([800, 800, 800, 480, 1120, 800, 800, 450, 1150, 800])
+    check(ect == [800, 800, 800, 800, 800, 800], f'isolated short-long ectopic pairs are rejected {ect}')
+    step = clean([900] * 5 + [550] * 5)
+    check(step == [900] * 5 + [550] * 5, f'a sustained level change is accepted after {3} consistent beats {step}')
+    live = p.evaluate("rrIntervals.slice()")
+    batch = p.evaluate("cleanRRData(rawRRIntervals, rawTimestamps).rr")
+    check(live == batch, 'live filter and batch cleaning give the same clean series'); a.close()
+
+@test
+def beat_times_within_a_packet(b, base):
+    "Several RR values in one notification get distinct beat times (cumulative RR); time never runs backwards"
+    a = App(b, base); p = a.open(); a.connect(1800)
+    p.wait_for_timeout(1500)
+    p.evaluate("__ble.hr([800,820,780],70)"); p.wait_for_timeout(300)
+    p.evaluate("__ble.hr([2000,2000],70)")      # intervals longer than the gap since the last packet
+    t = p.evaluate("rawTimestamps.slice()")
+    d = [round(t[i+1] - t[i], 3) for i in range(len(t) - 1)]
+    check(len(t) == 5 and abs(d[0] - 0.82) < 0.002 and abs(d[1] - 0.78) < 0.002, f'beats of one packet spaced by their RR intervals {d[:2]}')
+    check(all(x >= 0 for x in d) and t[0] >= 0, f'beat times never decrease and never go below 0 {d}')
+    check(p.evaluate("timestamps.length === rrIntervals.length && timestamps.every((v,i)=>!i||v>=timestamps[i-1])"),
+          'clean series keeps monotonic time stamps')
+    check(p.evaluate("JSON.stringify(packetBeatTimes([800,800],10,9.5)) === JSON.stringify([9.5,10])"),
+          'a beat that would precede the previous one is clamped to it'); a.close()
+
 def main():
     if not os.path.isdir(NM):
         sys.exit('Run `npm install` inside tests/ first (test-only copies of Plotly, GridStack and JSZip).')
