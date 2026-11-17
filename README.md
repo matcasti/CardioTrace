@@ -208,9 +208,45 @@ The app requests ECG streaming with the byte sequence `[0x02, 0x00, 0x00, 0x01, 
 
 > **Tested device:** Polar H10. Other BLE heart-rate monitors that implement the standard HR Measurement characteristic will supply RR intervals; ECG will be unavailable on non-Polar hardware.
 
+### Other RR sources
+
+**Any sensor exposing the standard Heart Rate service and putting RR intervals in its packets works** (e.g. Garmin HRM-Dual / HRM-Pro / HRM 200, Wahoo TICKR, Coospo / Magene straps, optical armbands with an HRV mode). Only the Polar H10 has been validated. What the app does with them:
+
+| Situation | Behaviour |
+|---|---|
+| Device sends HR but no RR intervals (e.g. most watches in *broadcast HR* mode) | After 10 such packets a notice under *Connection* says so; it disappears as soon as RR intervals arrive |
+| No ECG stream (any non-Polar sensor) | After 6 s the ECG plot shows *ECG not available for this device* instead of staying empty |
+| Optical / pulse sensor (PPG) recognised by name (Verity Sense, OH1, Scosche Rhythm, Whoop, Garmin / Coros / Amazfit watches…) | Caution notice: pulse-derived intervals are less precise and motion-sensitive |
+| Every recording | `device: { name, source }` stored with the session (`source`: `ecg` — confirmed by an ECG stream or a chest-strap name —, `ppg`, `unknown`); written to the CSV header (`# Device:`), the report and the History card |
+
+The sensor type cannot be read from the standard profile, so `ppg` / `ecg` from a name is an inference; `unknown` is used otherwise. ANT+ and vendor clouds (Garmin Connect…) are not reachable from a browser: for a Garmin watch, export the activity instead (see *Import*; .FIT is not supported yet).
+
+### Import
+
+*History → 📥 Import* (several files at once) turns RR files into ordinary stored sessions — searchable, restorable, analysable and exportable like recordings:
+
+| Format | Detection |
+|---|---|
+| CardioTrace CSV (clean or raw) | `Timestamp (s),RR Interval (ms),…` header: time stamps, events (with annotations), name, date, tags, device and calibration are restored — export → import is lossless |
+| One value per line (Elite HRV, Kubios, HRV Logger…) | ms, or seconds when the median is < 10; decimal commas accepted |
+| CSV / TSV / semicolon tables | the column named RR / RRI / IBI / NN / PPI / interval, otherwise the first column whose median is a plausible RR and that is not a monotonic time axis; units from the header (`ms`, `s`) or the median |
+
+The file values are stored as the raw stream and cleaned with the same artifact filter as live data; beat times are the cumulative RR sum when the file has none. The start time comes from the file (CardioTrace CSV) or is estimated from the file's modification date (flagged in `importedFrom.startEstimated`). Imports are assigned to the active subject. Files with fewer than 10 values, or whose values are mostly outside 250–2000 ms, are rejected and listed in the summary.
+
 ---
 
 ## User Interface Guide
+
+### Workflow at a glance (2026-11 interface pass)
+
+- **Context banner** at the top of *Record*: with no data it shows a four-step guide (subject & protocol → connect → mark events → disconnect) plus *Open a saved session* / *Import RR files*; while a saved session is shown it names it (subject, date, duration, sensor, artifact filter) with *Artifacts*, *Report* and *Close*. Live recordings hide it.
+- **Saved vs. live:** with a saved session open, *Reset Session* becomes *Close Session* (no confirmation — the session stays in History), the heart-rate card shows the session mean, and the ECG plot says the ECG is live-only. Empty plots show what to do instead of blank axes.
+- **Export Data card:** *Download* · *Copy* on one row, *Report* (with its ⚙ contents menu as one split button) · *🧹 Artifacts* on the next.
+- **History cards:** the session name is the title, followed by the start date and duration, and an explicit *▶ Open* button; the History badge is hidden when there are no sessions.
+- **Export tab:** header checkbox selects every listed session; *Artifact Correction* is one of the bulk actions.
+- **Notifications** are non-blocking toasts (with a detail list, e.g. per imported file); only destructive actions still ask for confirmation.
+- **Analyze / History / Export** show SRI and LF/HF for every session (computed from the clean series when a session never stored them).
+- **Phones:** tab labels stay visible under the icons (hidden only below 330 px).
 
 ### Controls Panel
 
@@ -339,6 +375,21 @@ recording in `manuscript/raw_data/` (1002 intervals) rules 1–3 give exactly th
 at all three thresholds.
 
 Intervals that pass validation go into `rrIntervals[]` / `timestamps[]`.
+
+#### Detection methods (live and retrospective)
+
+| Method | Rule | Live | Retrospective |
+|---|---|---|---|
+| **Δ previous** (default) | 250–2000 ms and \|RR − previous accepted\| ≤ 150 / 300 / 500 ms, re-anchoring | ✓ | ✓ |
+| **% previous** (Malik) | \|RR − previous accepted\| ≤ 10 / 20 / 30 % of it, re-anchoring | ✓ | ✓ |
+| **Local median** (Kubios threshold levels) | \|RR − median of 11 beats\| ≤ 45 / 35 / 25 / 15 / 5 % of the median (very low … very strong); running median live, centred median retrospectively | ✓ | ✓ |
+| **Automatic — Lipponen & Tarvainen (2019)** | classifies ectopic, missed, extra and long/short beats from the dRR and mRR series with adaptive (quartile-based) thresholds; optionally iterative | — | ✓ |
+
+**Correction** (retrospective): *Removed* drops the flagged intervals (both intervals of an ectopic or extra beat); *Corrected* replaces them by linear interpolation in time (per-beat methods) or, for the automatic method, merges extra beats, splits missed beats and moves ectopic / long-short beats to the midpoint of their neighbours (NeuroKit2's Kubios correction), which preserves the total duration. Live recordings always remove (a beat cannot wait for its successor).
+
+**Where:** *Settings → Artifact Rejection* (Δ chips, or *More methods…*) chooses the live method; it is **fixed when a recording starts** and stored with the session (`artifactFilter`), so one session never mixes two criteria. The 🧹 button in *Record → Export Data* opens the panel for the session shown (preview of raw vs. clean with flagged beats; *Apply* re-cleans the stored session), and *Export → 🧹 Artifacts…* re-cleans all selected sessions. The raw stream is never modified, so a session can be re-cleaned any number of times. The filter is written to the CSV header (`# Artifact Filter:`), the report and the History card.
+
+The automatic method is a line-by-line port of NeuroKit2 0.2.13 (`signal_fixpeaks(method="kubios")`); `verification/compare_artifacts.py` checks that the detections are identical and the corrected peaks agree within one sample.
 All post-calibration intervals (pass or fail) go into `rawRRIntervals[]` / `rawTimestamps[]`.
 
 **Data Quality** is displayed as `(rrIntervals.length / rawRRIntervals.length) × 100 %`.
@@ -505,16 +556,18 @@ The CSV file consists of a **metadata header block** (lines starting with `#`) f
 **Header fields:**
 
 ```
-# Polar H10 HRV Data Export
+# CardioTrace HRV Data Export     ← "# Polar H10 HRV Data Export" before 2026-11
 # Generated: <ISO timestamp>
 # Date: <session start>
 # Duration: <formatted duration>
 # Filename: <session name>
+# Device: <name> — <ECG chest strap | optical pulse sensor (PPG) | unknown sensor …>   (imports: # Source: imported file <name> (<format>))
 # Tags: <comma-separated>
 # Data Type: Clean (artifacts removed) | Raw (uncleaned)
 # Total RR Intervals: <N>
 # Valid Intervals: <N> (<quality %>)
 # Removed Artifacts: <N>
+# Artifact Filter: <method, threshold, correction>   ("not recorded" for sessions saved before 2026-11)
 # Calibration Period: <N> seconds (excluded from data)   ← value used for that recording; "not recorded" for sessions saved before 2026-11
 # Total Events: <N>
 # Event Types: <comma-separated list>
@@ -709,7 +762,7 @@ Implementation notes: accent colours and the corner radius are CSS variables (`-
 
 ## Testing and verification
 
-* [`tests/`](tests/README.md) — 70 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, escaping, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
+* [`tests/`](tests/README.md) — 112 automated browser checks against a simulated Polar H10 (acquisition, link loss, protocols, exports, customisation, escaping, layout from 240 px to 3440 px). Run with `python tests/run_tests.py` after `npm install` in `tests/`.
 * [`verification/`](verification/README.md) — numerical cross-check of the HRV indices against NeuroKit2 on a real recording and on synthetic series with a known LF/HF ratio.
 
 ### Changes that affect numerical output

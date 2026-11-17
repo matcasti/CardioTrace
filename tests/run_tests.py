@@ -386,7 +386,7 @@ def robustness_third_scan(b, base):
     a = App(b, base)
     a.p.add_init_script("indexedDB.open = () => { const r = {}; setTimeout(() => { r.error = new DOMException('blocked'); r.onerror && r.onerror(); }, 0); return r; };")
     p = a.open(1500)
-    check(p.evaluate("!!grid") and any('not available' in d for d in a.dialogs), 'without IndexedDB the app still initialises and warns the user')
+    check(p.evaluate("!!grid") and 'not available' in p.evaluate("document.getElementById('toastHost')?.innerText || ''"), 'without IndexedDB the app still initialises and warns the user')
     for tab in ('history', 'analyze', 'subjects', 'export', 'record'): p.evaluate(f"switchTab('{tab}')"); p.wait_for_timeout(150)
     check(not [e for e in a.errors if 'IndexedDB unavailable' not in e], f'all tabs render without storage {a.errors[:2]}'); a.close()
 
@@ -428,6 +428,180 @@ def beat_times_within_a_packet(b, base):
           'clean series keeps monotonic time stamps')
     check(p.evaluate("JSON.stringify(packetBeatTimes([800,800],10,9.5)) === JSON.stringify([9.5,10])"),
           'a beat that would precede the previous one is clamped to it'); a.close()
+
+# ───────────────────────────── Other RR sources ─────────────────────────────
+NAME_DEVICE = """(name)=>{ const orig = navigator.bluetooth.requestDevice;
+    navigator.bluetooth.requestDevice = async (...x) => { const d = await orig(...x); d.name = name; return d; }; }"""
+
+@test
+def generic_ble_devices(b, base):
+    "Any standard BLE HR sensor: device stored with the session; warnings for no RR, no ECG and pulse-derived data"
+    a = App(b, base); p = a.open(); p.evaluate(NAME_DEVICE, 'HRM-Pro:123456'); a.connect(1800)
+    for _ in range(4): p.evaluate("__ble.hr([800],70)"); p.wait_for_timeout(50)
+    p.evaluate("autoSaveSession()"); p.wait_for_timeout(400)
+    s = p.evaluate("loadSession(currentSessionId)")
+    check(s['device'] == {'name': 'HRM-Pro:123456', 'source': 'ecg'}, f"device and source stored with the session {s['device']}")
+    check('# Device: HRM-Pro:123456 — ECG chest strap' in p.evaluate("generateMetadataHeader({live:true})"), 'CSV header names the device')
+    p.wait_for_timeout(5000)
+    check('not available' in p.evaluate("document.getElementById('ecgChart').innerText"), 'device without ECG: ECG plot says so instead of staying empty')
+    fire = f"""()=>{{ const c=__chars['{HR_UUID}']; c.value=new DataView(new Uint8Array([0x00,72]).buffer); c.dispatchEvent(new Event('characteristicvaluechanged')); }}"""
+    for _ in range(10): p.evaluate(fire)
+    check('no RR intervals' in (p.evaluate("document.getElementById('deviceNotice')?.textContent") or ''), 'HR-only device: visible notice that no RR intervals arrive')
+    p.evaluate("__ble.hr([800],70)")
+    check(p.evaluate("document.getElementById('deviceNotice').hidden"), 'notice disappears once RR intervals arrive'); a.close()
+
+    a = App(b, base); p = a.open(); p.evaluate(NAME_DEVICE, 'Polar Verity Sense'); a.connect(1800)
+    check('PPG' in (p.evaluate("document.getElementById('deviceNotice')?.textContent") or ''), 'optical sensor: pulse-derived caution shown')
+    a.close()
+    a = App(b, base); p = a.open(); a.connect(1800)     # unnamed device that streams ECG (Polar H10 path)
+    p.evaluate("__ble.ecg(73,0)")
+    check(p.evaluate("sessionDeviceInfo.source") == 'ecg' and not a.errors, 'an ECG stream marks the source as ECG chest strap'); a.close()
+
+def _import(p, files):
+    p.set_input_files('#importRRFile', files=[{'name': n, 'mimeType': 'text/plain', 'buffer': c.encode()} for n, c in files])
+    p.wait_for_timeout(1200)
+
+@test
+def import_rr_files(b, base):
+    "RR files (one per line in ms or s, CSV/TSV tables, CardioTrace CSV) become stored sessions; bad files are reported"
+    a = App(b, base); p = a.open()
+    import math
+    rr = [round(800 + 40 * math.sin(i / 5) + (i % 3) * 5) for i in range(120)]
+    _import(p, [('elite.txt', '\n'.join(map(str, rr))),
+                ('kubios.txt', '\n'.join(f'{v/1000:.3f}' for v in rr)),
+                ('app.csv', 'Time;RR (ms)\n' + '\n'.join(f'{i},5;{v},0' for i, v in enumerate(rr))),
+                ('two.tsv', '\n'.join(f'{(i+1)*0.8:.3f}\t{v/1000:.3f}' for i, v in enumerate(rr))),
+                ('comma.txt', '\n'.join(f'{v/1000:.3f}'.replace('.', ',') for v in rr)),
+                ('pairs.csv', '\n'.join(f'{i+1},{v}' for i, v in enumerate(rr))),
+                ('junk.txt', 'hello\nworld\n')])
+    ss = sorted(p.evaluate("loadSessions()"), key=lambda s: s['id'])
+    check(len(ss) == 6, f'6 valid files imported, the invalid one skipped ({len(ss)})')
+    check(all(len(s['rawRRIntervals']) == 120 and abs(s['rawRRIntervals'][0] - rr[0]) < 0.6 for s in ss),
+          'ms, seconds, decimal-comma CSV, two-column TSV, decimal-comma list and integer-pair CSV all give the same RR series')
+    check(all(s['importedFrom'] and s['importedFrom']['startEstimated'] and s['rrIntervals'] for s in ss), 'imported sessions carry their source and a clean series')
+    check('✗ junk.txt' in p.evaluate("document.getElementById('toastHost')?.innerText || ''"), 'the invalid file is reported, not silently dropped')
+
+    sid = p.evaluate("""async()=>{ const rr=[],ts=[]; let t=0; for(let i=0;i<80;i++){ const v=850+(i%5)*10; t+=v/1000; rr.push(v); ts.push(+t.toFixed(3)); }
+        return await saveSession({startTime:Date.parse('2026-03-04T05:06:07Z'),filename:'round trip',rrIntervals:rr,timestamps:ts,rawRRIntervals:rr,rawTimestamps:ts,
+          eventMarkers:[{time:ts[10],type:'Note',annotation:'a, "b"'}],tags:['x'],avgRR:870,rmssd:5,sri:0,calibrationSecs:8,
+          device:{name:'Polar H10 ABC',source:'ecg'}}); }""")
+    csv = p.evaluate(f"(async()=>storedSessionCSV(await loadSession({sid})))()")
+    _import(p, [('roundtrip.csv', csv)])
+    r = p.evaluate("loadSessions().then(a=>a.find(s=>s.importedFrom && s.importedFrom.filename==='roundtrip.csv'))")
+    o = p.evaluate(f"loadSession({sid})")
+    check(r and r['filename'] == 'round trip' and r['startTime'] == o['startTime'] and r['rawRRIntervals'] == o['rrIntervals'] and r['timestamps'] == o['timestamps'],
+          'CardioTrace CSV round trip keeps name, start time, RR values and time stamps')
+    check(r['eventMarkers'][0]['annotation'] == 'a, "b"' and r['tags'] == ['x'] and r['device'] == o['device'] and r['calibrationSecs'] == 8,
+          'round trip keeps events, tags, device and calibration')
+    p.evaluate(f"restoreSession({r['id']})"); p.wait_for_timeout(800)
+    h = p.evaluate("generateMetadataHeader({live:true})")
+    check('# Source: imported file roundtrip.csv' in h and 'not applicable (imported file)' in h, 'export of a restored import states its source')
+    p.evaluate("switchTab('history')"); p.wait_for_timeout(400)
+    check('Imported' in p.evaluate("document.getElementById('historyContent').innerText") and not a.errors, f'history shows imported sessions {a.errors[:1]}')
+    a.close()
+
+# ───────────────────────────── Artifact & ectopic-beat options ─────────────────────────────
+RAW_WITH_ECTOPICS = """()=>{ const rr=[], ts=[]; let t=0;
+    for (let i=0;i<400;i++){ let v=850+40*Math.sin(i/6); if (i%50===25) v=560; if (i%50===26) v=1140; t+=v/1000; rr.push(Math.round(v)); ts.push(+t.toFixed(3)); }
+    return {rr, ts}; }"""
+
+@test
+def live_artifact_methods(b, base):
+    "Live: % and running-median methods; the method is fixed per recording and stored / exported with it"
+    a = App(b, base, settings={'artifactMethod': 'percent', 'artifactPercent': 20}); p = a.open(); a.connect(1800)
+    for v in [800, 800, 1000, 900, 880]: p.evaluate(f"__ble.hr([{v}],70)"); p.wait_for_timeout(30)
+    check(p.evaluate("rrIntervals.slice()") == [800, 800, 900, 880] or [round(x) for x in p.evaluate("rrIntervals.slice()")] == [800, 800, 900, 880],
+          'percent method: +25 % beat rejected, +12.5 % accepted')
+    p.evaluate("appSettings.artifactMethod='delta'; appSettings.artifactThreshold=500")      # change mid-recording
+    p.evaluate("__ble.hr([1150],70)")
+    check(len(p.evaluate("rrIntervals")) == 4, 'a settings change does not alter the running recording (still 20 %)')
+    p.evaluate("autoSaveSession()"); p.wait_for_timeout(400)
+    f = p.evaluate("loadSession(currentSessionId).then(s=>s.artifactFilter)")
+    check(f and f['method'] == 'percent' and f['percent'] == 20, f'artifact filter stored with the session {f}')
+    check('# Artifact Filter: 250–2000 ms; |RR − previous accepted RR| ≤ 20 %' in p.evaluate("generateMetadataHeader({live:true})"), 'CSV header states the filter'); a.close()
+
+    a = App(b, base, settings={'artifactMethod': 'median', 'artifactMedianLevel': 'strong'}); p = a.open(); a.connect(1800)
+    for v in [800, 810, 790, 805, 800, 960, 795, 805]: p.evaluate(f"__ble.hr([{v}],70)"); p.wait_for_timeout(30)
+    check(960 not in [round(x) for x in p.evaluate("rrIntervals")] and len(p.evaluate("rrIntervals")) == 7, 'running-median method (strong, 15 %) rejects a +20 % beat')
+    check(not a.errors, f'no errors {a.errors[:1]}'); a.close()
+
+@test
+def retrospective_artifact_methods(b, base):
+    "Retrospective: every method flags the ectopic pairs; correction keeps duration; raw untouched; re-cleaning is reversible"
+    a = App(b, base); p = a.open()
+    r = p.evaluate(f"""()=>{{ const d=({RAW_WITH_ECTOPICS})(); const out={{}};
+        for (const [k,cfg] of Object.entries({{
+            delta:{{method:'delta',deltaMs:150,correction:'remove'}}, percent:{{method:'percent',percent:20,correction:'interpolate'}},
+            median:{{method:'median',centered:true,level:'medium',correction:'remove'}}, lipR:{{method:'lipponen',correction:'remove'}},
+            lipC:{{method:'lipponen',correction:'interpolate',iterative:true}} }})) {{
+            const res=applyArtifactCorrection(d.rr,d.ts,cfg);
+            out[k]={{n:res.rr.length, flagged:res.flagged, sum:res.rr.reduce((x,y)=>x+y,0), counts:res.counts, mono:res.times.every((v,i)=>!i||v>=res.times[i-1])}};
+        }}
+        out.rawSum=d.rr.reduce((x,y)=>x+y,0); return out; }}""")
+    ect = {25 + 50 * k for k in range(8)}
+    for k in ('delta', 'percent', 'median', 'lipR'):
+        check(ect <= set(r[k]['flagged']), f"{k}: all 8 ectopic beats flagged ({len(r[k]['flagged'])} flagged)")
+    check(r['percent']['n'] == 400, 'percent + interpolation keeps every beat (values replaced)')
+    check(r['lipC']['counts']['ectopic'] >= 8 and abs(r['lipC']['sum'] - r['rawSum']) < 2 and r['lipC']['mono'],
+          f"automatic correction realigns ectopic beats and preserves total duration ({r['lipC']['counts']})")
+
+    sid = p.evaluate(f"""async()=>{{ const d=({RAW_WITH_ECTOPICS})();
+        return await saveSession({{startTime:Date.parse('2026-02-01T08:00:00Z'),filename:'ect',rrIntervals:d.rr,timestamps:d.ts,rawRRIntervals:d.rr,rawTimestamps:d.ts,
+          eventMarkers:[],avgRR:850,rmssd:20,sri:0}}); }}""")
+    p.evaluate(f"restoreSession({sid})"); p.wait_for_timeout(600)
+    p.evaluate("openArtifactPanel()"); p.wait_for_timeout(300)
+    p.click('#artMethodGroup [data-val="lipponen"]'); p.click('#artCorrectionGroup [data-val="interpolate"]'); p.wait_for_timeout(300)
+    check('ectopic' in p.inner_text('#artifactSummary') and p.evaluate("!!document.getElementById('artifactPreviewChart').data"), 'panel previews the flagged beats')
+    p.click('#artifactApplyBtn'); p.wait_for_timeout(1200)
+    s = p.evaluate(f"loadSession({sid})")
+    raw0 = p.evaluate(f"({RAW_WITH_ECTOPICS})().rr")
+    check(s['artifactFilter']['method'] == 'lipponen' and s['rawRRIntervals'] == raw0 and s['rrIntervals'] != raw0,
+          'applying to the shown session re-cleans it from raw; raw unchanged')
+    check('Lipponen' in p.evaluate("generateMetadataHeader({live:true})"), 'restored view and its export describe the new filter')
+    p.evaluate(f"reprocessSession({sid}, {{method:'delta',deltaMs:300,correction:'remove'}})"); p.wait_for_timeout(400)
+    s2 = p.evaluate(f"loadSession({sid})")
+    check(s2['artifactFilter']['method'] == 'delta' and s2['rawRRIntervals'] == raw0, 're-cleaning with another method is possible (reversible)')
+
+    sid2 = p.evaluate(f"""async()=>{{ const d=({RAW_WITH_ECTOPICS})(); return await saveSession({{startTime:Date.now(),filename:'ect2',rrIntervals:d.rr,timestamps:d.ts,rawRRIntervals:d.rr,rawTimestamps:d.ts,eventMarkers:[],avgRR:850,rmssd:20,sri:0}}); }}""")
+    p.evaluate("window.confirm=()=>true; switchTab('export')"); p.wait_for_timeout(400)
+    p.evaluate(f"exportSelectedIds = new Set([{sid},{sid2}]); updateExportSelectionUI()")
+    p.click('#exportArtifactBtn'); p.wait_for_timeout(300)
+    p.click('#artMethodGroup [data-val="median"]'); p.click('#artifactApplyBtn'); p.wait_for_timeout(1200)
+    m = p.evaluate(f"Promise.all([{sid},{sid2}].map(loadSession)).then(a=>a.map(s=>s.artifactFilter.method))")
+    check(m == ['median', 'median'], f'batch re-clean from the Export tab {m}')
+    check(not a.errors, f'no errors {a.errors[:1]}'); a.close()
+
+    a = App(b, base); p = a.open(); a.connect(1800)
+    for _ in range(4): p.evaluate("__ble.hr([800],70)"); p.wait_for_timeout(50)
+    p.evaluate("autoSaveSession()"); p.wait_for_timeout(400)
+    err = p.evaluate("reprocessSession(currentSessionId,{method:'delta',deltaMs:300}).then(()=>'',e=>e.message)")
+    check('recorded' in err, 'the session being recorded cannot be re-cleaned'); a.close()
+
+# ───────────────────────────── UX ─────────────────────────────
+@test
+def ux_context_and_navigation(b, base):
+    "Guide when empty; saved-session banner with Close; Open buttons; no 0 badge; select-all; toasts instead of alerts"
+    a = App(b, base); p = a.open()
+    check(not p.evaluate("document.getElementById('sessionBanner').hidden") and 'CONNECT' in p.inner_text('#sessionBanner').upper(),
+          'empty Record tab shows the get-started guide')
+    check(p.evaluate("getComputedStyle(document.getElementById('historyBadge')).display") == 'none', 'no "0" badge on History')
+    ids = [p.evaluate(SESSION, {'n': 60, 'name': f'S{i}'}) for i in range(3)]
+    p.evaluate("switchTab('history')"); p.wait_for_timeout(400)
+    p.click(f'.session-action-btn.open[data-id="{ids[1]}"]'); p.wait_for_timeout(800)
+    t = p.inner_text('#sessionBanner')
+    check(p.evaluate("currentTab") == 'record' and 'S1' in t and 'CLOSE' in t.upper(), 'Open loads the session; banner names it and offers Close')
+    check(p.inner_text('#resetBtn').strip().upper().endswith('CLOSE SESSION'), 'Reset becomes "Close Session" for a saved session')
+    n0 = len(a.dialogs)
+    p.click('#sessionBanner [data-act="close"]'); p.wait_for_timeout(300)
+    check(len(a.dialogs) == n0 and p.evaluate("rrIntervals.length") == 0 and 'CONNECT' in p.inner_text('#sessionBanner').upper(),
+          'closing a saved session needs no confirmation and returns to the guide')
+    p.evaluate("switchTab('export')"); p.wait_for_timeout(400)
+    p.click('#exportCheckAll'); p.wait_for_timeout(300)
+    check(p.evaluate("exportSelectedIds.size") == 3 and not p.evaluate("document.getElementById('exportArtifactBtn').disabled"),
+          'header checkbox selects all listed sessions and enables the bulk actions')
+    p.evaluate("exportData()"); p.wait_for_timeout(200)
+    check(len(a.dialogs) == n0 and 'No data' in p.inner_text('#toastHost'), 'messages are non-blocking toasts, not alert dialogs')
+    check(not a.errors, f'no errors {a.errors[:1]}'); a.close()
 
 def main():
     if not os.path.isdir(NM):

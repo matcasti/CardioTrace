@@ -4467,3 +4467,104 @@ body.density-compact .chart-title { margin-bottom: 8px; }
 .rep-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rep-item:has(input:checked) { border-color: rgba(var(--accent-rgb), 0.45); background: rgba(var(--accent-rgb), 0.08); }
 .modal-actions .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Device notices (generic BLE sensors: no RR data, pulse-derived intervals) ── */
+.device-notice{margin-top:10px;padding:8px 12px;border-radius:calc(var(--radius) * .5);font-size:12px;line-height:1.45;
+  overflow-wrap:anywhere;border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.10);color:var(--text-secondary)}
+.device-notice--info{border-color:rgba(var(--accent-rgb, 99,102,241),.35);background:rgba(var(--accent-rgb, 99,102,241),.08)}
+.device-notice[hidden]{display:none}
+.session-source-chip{display:inline-block;margin-top:4px;font-size:11px;color:var(--text-tertiary)}
+
+/* ── Artifact correction panel ── */
+#artifactPanel .sett-chip-group{flex-wrap:wrap}
+#artifactPanel .rep-group{margin-top:12px}
+.art-param{display:none}
+.art-param.is-active{display:block}
+.art-summary{margin-top:10px;font-size:12.5px;line-height:1.5;color:var(--text-secondary);overflow-wrap:anywhere}
+.art-summary b{color:var(--text-primary)}
+.art-preview{width:100%;height:220px;margin-top:8px}
+#artifactMoreBtn{margin-top:8px;width:100%}
+
+/* ═══════════════════════ UX pass (2026-11) ═══════════════════════ */
+/* Toasts — non-blocking notifications */
+#toastHost{position:fixed;right:16px;bottom:16px;z-index:5000;display:flex;flex-direction:column;gap:8px;
+  width:min(420px,calc(100vw - 32px));pointer-events:none}
+.toast{pointer-events:auto;display:flex;gap:10px;align-items:flex-start;padding:12px 12px 12px 14px;border-radius:12px;
+  background:var(--bg-secondary);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--border-color);
+  box-shadow:0 10px 30px rgba(0,0,0,.35);color:var(--text-primary);font-size:13px;line-height:1.45;
+  border-left:4px solid rgba(var(--accent-rgb),.9);animation:toastIn .22s ease-out;overflow-wrap:anywhere}
+.toast--success{border-left-color:var(--success)}
+.toast--warn{border-left-color:var(--warning)}
+.toast--error{border-left-color:var(--danger)}
+.toast.is-leaving{opacity:0;transform:translateY(6px);transition:all .22s ease}
+.toast-icon{flex:0 0 auto;line-height:1.3}
+.toast-body{flex:1 1 auto;min-width:0}
+.toast-text{font-weight:600}
+.toast-detail{margin:6px 0 0;padding-left:16px;color:var(--text-secondary);font-size:12px;max-height:160px;overflow:auto}
+.toast-close{flex:0 0 auto;background:none;border:0;color:var(--text-tertiary);cursor:pointer;font-size:13px;padding:2px 4px}
+.toast-close:hover{color:var(--text-primary)}
+@keyframes toastIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+body.no-motion .toast{animation:none}
+
+/* Record-tab context banner */
+.session-banner{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;
+  padding:14px 16px;border-radius:calc(var(--radius) * .7);border:1px solid var(--border-color);background:var(--bg-tertiary)}
+.session-banner[hidden]{display:none}
+.session-banner--stored{border-color:rgba(var(--accent-rgb),.45);background:rgba(var(--accent-rgb),.08)}
+.sb-main{display:flex;gap:12px;align-items:center;min-width:0;flex:1 1 320px}
+.sb-icon{font-size:22px}
+.sb-text{min-width:0}
+.sb-title{font-size:14px;color:var(--text-primary);overflow-wrap:anywhere}
+.sb-meta{font-size:12px;color:var(--text-secondary);margin-top:2px;overflow-wrap:anywhere}
+.sb-actions{display:flex;flex-wrap:wrap;gap:8px}
+.sb-actions .btn{min-width:0;padding:8px 12px;font-size:12px}
+.sb-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;flex:1 1 560px}
+.sb-step{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.45;color:var(--text-secondary);min-width:0}
+.sb-step b{color:var(--text-primary)}
+.sb-step span{flex:0 0 22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:800;color:#fff;background:rgba(var(--accent-rgb),.85)}
+@media (max-width:1100px){.sb-steps{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:520px){.sb-steps{grid-template-columns:minmax(0,1fr)}.session-banner{padding:12px}}
+
+/* Report + its options as one split button */
+.split-btn{display:flex;flex:2 1 0;min-width:0}
+.split-btn > .btn:first-child{flex:1 1 auto;min-width:0;border-top-right-radius:0;border-bottom-right-radius:0}
+.split-btn > .split-btn-side{flex:0 0 auto;min-width:0;padding-left:12px;padding-right:12px;border-top-left-radius:0;border-bottom-left-radius:0;
+  border-left:1px solid rgba(255,255,255,.25)}
+
+/* History card: explicit Open */
+.session-action-btn.open{width:auto;padding:0 10px;font-size:12px;font-weight:700;color:var(--accent-primary);
+  border-color:rgba(var(--accent-rgb),.4);background:rgba(var(--accent-rgb),.12)}
+.session-action-btn.open:hover{transform:none;background:rgba(var(--accent-rgb),.25);color:var(--text-primary)}
+.session-card .session-date{overflow-wrap:anywhere}
+
+/* Export: four actions */
+.export-actions-footer{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:1400px){.export-actions-footer{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.export-actions-footer{grid-template-columns:minmax(0,1fr)}}
+
+/* Phones: keep short tab labels under the icons (icons alone were ambiguous) */
+@media (max-width:768px){
+  .tab-btn{flex-direction:column;gap:2px;padding:8px 8px 10px}
+  .tab-label{display:block;font-size:10px;letter-spacing:.2px}
+  .tab-btn .tab-badge{position:absolute;top:4px;right:2px}
+  .tab-btn{position:relative}
+}
+@media (max-width:330px){.tab-label{display:none}}
+
+/* Artifact panel: 2 × 2 method grid, highlighted result */
+#artMethodGroup{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+#artMethodGroup .sett-chip{width:100%}
+#artifactPanel .rep-item span{white-space:normal}
+.art-summary{padding:10px 12px;border-radius:10px;background:var(--bg-tertiary);border:1px solid var(--border-color)}
+.sb-step p{margin:0;min-width:0;overflow-wrap:anywhere}
+/* split button must not inherit the phone rule ".button-row .btn { width:100% }" */
+.button-row .split-btn > .btn:first-child{width:auto}
+.button-row .split-btn > .split-btn-side{width:auto;flex:0 0 auto}
+.split-btn{flex:1 1 140px}
+.button-row > .btn{flex:1 1 120px}
+.sb-actions .btn{flex:1 1 auto;white-space:normal}
+/* Export actions: two per row until there is room for four */
+.export-actions-footer{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media (min-width:1800px){.export-actions-footer{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:760px){.export-actions-footer{grid-template-columns:minmax(0,1fr)}}

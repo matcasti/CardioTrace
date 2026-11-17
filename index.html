@@ -50,6 +50,7 @@
         </nav>
 
         <div id="tab-record" class="tab-panel is-active">
+            <div class="session-banner" id="sessionBanner" hidden></div>
 
             <!-- Event Type Modal -->
             <div class="modal-panel" id="eventTypePanel">
@@ -243,10 +244,15 @@
                             <input type="text" id="filename" placeholder="Session name">
                         </div>
                         <div class="button-row">
-                            <button class="btn btn-secondary" id="exportBtn" disabled>💾 Download</button>
-                            <button class="btn btn-secondary" id="copyBtn" disabled>📋 Copy</button>
-                            <button class="btn btn-primary" id="reportBtn" disabled>📄 Report</button>
-                            <button class="btn btn-secondary btn-icon-only" id="reportOptionsBtn" title="Choose what the report contains" aria-label="Report contents">⚙</button>
+                            <button class="btn btn-secondary" id="exportBtn" disabled title="Download the RR series (CSV or TXT)">💾 Download</button>
+                            <button class="btn btn-secondary" id="copyBtn" disabled title="Copy the RR series to the clipboard">📋 Copy</button>
+                        </div>
+                        <div class="button-row">
+                            <div class="split-btn">
+                                <button class="btn btn-primary" id="reportBtn" disabled title="Open a printable HTML report">📄 Report</button>
+                                <button class="btn btn-primary split-btn-side" id="reportOptionsBtn" title="Choose what the report contains" aria-label="Report contents">⚙</button>
+                            </div>
+                            <button class="btn btn-secondary" id="artifactBtn" title="Detect and correct artifacts and ectopic beats">🧹 Artifacts</button>
                         </div>
                         <div class="toggle-group">
                             <span class="toggle-label">RR only</span>
@@ -549,6 +555,8 @@
                             <button class="history-tab active" id="tabCards">◈ Cards</button>
                             <button class="history-tab" id="tabTable">⊞ Table</button>
                         </div>
+                        <button class="btn btn-secondary" id="importRRBtn" title="Import RR intervals from TXT / CSV files (CardioTrace, Kubios, Elite HRV, other apps)">📥 Import</button>
+                        <input type="file" id="importRRFile" accept=".txt,.csv,.tsv,.rr,.hrv,text/plain,text/csv" multiple hidden>
                         <button class="btn btn-accent" id="bulkDownloadBtn">⬇ Download</button>
                         <select id="bulkFormatSelect">
                             <option value="csv">CSV</option>
@@ -756,6 +764,16 @@
                         </div>
                         <button class="btn btn-secondary" id="exportJsonBtn" disabled>Export JSON</button>
                     </div>
+                    <div class="export-action-card">
+                        <div class="export-action-left">
+                            <div class="export-action-icon">🧹</div>
+                            <div class="export-action-info">
+                                <div class="export-action-title">Artifact Correction</div>
+                                <div class="export-action-desc">Re-clean the selection from raw RR · preview first</div>
+                            </div>
+                        </div>
+                        <button class="btn btn-secondary" id="exportArtifactBtn" disabled>Re-clean…</button>
+                    </div>
                 </div>
 
             </div>
@@ -870,6 +888,8 @@
                                 <button class="sett-chip active" data-val="300">Moderate<span>≤ 300 ms</span></button>
                                 <button class="sett-chip" data-val="500">Loose<span>≤ 500 ms</span></button>
                             </div>
+                            <p class="sett-hint-text" id="artifactLiveSummary"></p>
+                            <button class="btn btn-secondary" id="artifactMoreBtn" type="button">🧹 More methods &amp; retrospective correction…</button>
                         </div>
                     </div>
                 </div>
@@ -1031,6 +1051,59 @@
             </div>
         </div>
         <div class="modal-overlay" id="reportOptionsOverlay"></div>
+
+        <!-- Artifact & ectopic beat correction -->
+        <div class="modal-panel" id="artifactPanel">
+            <div class="modal-header">
+                <h2>🧹 Artifacts &amp; ectopic beats</h2>
+                <button class="modal-close" id="artifactClose">✕</button>
+            </div>
+            <div class="modal-content">
+                <p class="sett-hint-text" id="artifactTarget"></p>
+                <div class="rep-group">Detection method</div>
+                <div class="sett-chip-group art-methods" id="artMethodGroup">
+                    <button class="sett-chip" data-val="delta">Δ previous<span>ms</span></button>
+                    <button class="sett-chip" data-val="percent">% previous<span>Malik</span></button>
+                    <button class="sett-chip" data-val="median">Local median<span>Kubios levels</span></button>
+                    <button class="sett-chip" data-val="lipponen">Automatic<span>Lipponen 2019</span></button>
+                </div>
+                <div class="art-param" data-for="delta">
+                    <div class="rep-group">Max difference</div>
+                    <div class="sett-chip-group" id="artDeltaGroup">
+                        <button class="sett-chip" data-val="150">150 ms</button><button class="sett-chip" data-val="300">300 ms</button><button class="sett-chip" data-val="500">500 ms</button>
+                    </div>
+                </div>
+                <div class="art-param" data-for="percent">
+                    <div class="rep-group">Max deviation</div>
+                    <div class="sett-chip-group" id="artPercentGroup">
+                        <button class="sett-chip" data-val="10">10 %</button><button class="sett-chip" data-val="20">20 %</button><button class="sett-chip" data-val="30">30 %</button>
+                    </div>
+                </div>
+                <div class="art-param" data-for="median">
+                    <div class="rep-group">Threshold level</div>
+                    <div class="sett-chip-group" id="artLevelGroup">
+                        <button class="sett-chip" data-val="vlow">Very low<span>45 %</span></button><button class="sett-chip" data-val="low">Low<span>35 %</span></button><button class="sett-chip" data-val="medium">Medium<span>25 %</span></button><button class="sett-chip" data-val="strong">Strong<span>15 %</span></button><button class="sett-chip" data-val="vstrong">Very strong<span>5 %</span></button>
+                    </div>
+                </div>
+                <div class="art-param" data-for="lipponen">
+                    <label class="rep-item"><input type="checkbox" id="artIterative" checked><span>Iterative (repeat until the number of artifacts stops decreasing, as NeuroKit2)</span></label>
+                </div>
+                <div class="rep-group">Artifacts are…</div>
+                <div class="sett-chip-group" id="artCorrectionGroup">
+                    <button class="sett-chip" data-val="remove">Removed</button>
+                    <button class="sett-chip" data-val="interpolate">Corrected<span>interpolated / realigned</span></button>
+                </div>
+                <p class="sett-hint-text" id="artifactDescription"></p>
+                <div class="art-summary" id="artifactSummary"></div>
+                <div class="art-preview" id="artifactPreviewChart"></div>
+                <p class="sett-hint-text">The raw RR stream is never modified: a session can be re-cleaned any number of times. Live recordings can use Δ, % or running-median detection (artifacts removed); the automatic method and correction by interpolation are retrospective.</p>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" id="artifactApplyBtn" style="flex:1;">Apply</button>
+                <button class="btn btn-secondary" id="artifactLiveBtn" style="flex:1;">Use for live recordings</button>
+            </div>
+        </div>
+        <div class="modal-overlay" id="artifactOverlay"></div>
 
         <!-- Per-plot popover (download menu / plot settings) -->
         <div class="cp" id="chartPopover" role="dialog" aria-modal="false"></div>

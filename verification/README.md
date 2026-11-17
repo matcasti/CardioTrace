@@ -51,3 +51,30 @@ python verification/compare_neurokit2.py  # prints the tables and writes verific
 * LF/HF from a wavelet transform and from a Welch periodogram are different estimators; on non-stationary real data they can differ by ≈ 8 %
   (B). Neither is a measure of sympathovagal balance.
 * This is a **technical** verification on one recording and synthetic signals; it is not a clinical validation.
+
+
+## Artifact detection and correction (`compare_artifacts.py`)
+
+```bash
+python verification/compare_artifacts.py   # writes verification/artifact_results.json
+```
+
+CardioTrace's automatic method (Lipponen & Tarvainen 2019, `app_artifacts.js` loads the functions verbatim from
+`../engine.js`) against NeuroKit2 0.2.13 `signal_fixpeaks(method="kubios")`, on the real recording and on
+eight synthetic series (600 beats with respiratory and Mayer waves, 12 injected artifacts each: ectopic, missed,
+extra and long beats). Peaks at 1000 Hz. First-pass detections per class must be identical; the iteratively corrected
+peaks must agree within 1 sample (NeuroKit2 truncates moved peaks to integer samples).
+
+| Case | Ectopic | Missed | Extra | Long/short | Detections | Max peak difference (samples) |
+|---|---|---|---|---|---|---|
+| real recording (1002 beats) | 0 | 0 | 0 | 3 | identical | 0.50 |
+| synthetic #1 (12 injected artifacts) | 3 | 3 | 3 | 9 | identical | 0.75 |
+| synthetic #2 (12 injected artifacts) | 3 | 3 | 3 | 8 | identical | 0.50 |
+| synthetic #3 (12 injected artifacts) | 3 | 3 | 3 | 9 | identical | 0.75 |
+| synthetic #4 (12 injected artifacts) | 3 | 3 | 3 | 10 | identical | 0.75 |
+| synthetic #5 (12 injected artifacts) | 4 | 3 | 3 | 10 | identical | 0.75 |
+| synthetic #6 (12 injected artifacts) | 3 | 3 | 3 | 9 | identical | 0.50 |
+| synthetic #7 (12 injected artifacts) | 3 | 3 | 3 | 9 | identical | 0.75 |
+| synthetic #8 (12 injected artifacts) | 3 | 3 | 3 | 9 | identical | 0.75 |
+
+The long/short counts exceed the 3 injected long beats: beats next to an injected artifact can also be classified as long/short — by both implementations alike.

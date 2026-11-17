@@ -1,0 +1,114 @@
+{
+  "neurokit2": "0.2.13",
+  "cases": [
+    {
+      "case": "real recording (1002 beats)",
+      "nk2_counts": {
+        "ectopic": 0,
+        "missed": 0,
+        "extra": 0,
+        "longshort": 3
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.5
+    },
+    {
+      "case": "synthetic #1 (12 injected artifacts)",
+      "nk2_counts": {
+        "ectopic": 3,
+        "missed": 3,
+        "extra": 3,
+        "longshort": 9
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.75
+    },
+    {
+      "case": "synthetic #2 (12 injected artifacts)",
+      "nk2_counts": {
+        "ectopic": 3,
+        "missed": 3,
+        "extra": 3,
+        "longshort": 8
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.5
+    },
+    {
+      "case": "synthetic #3 (12 injected artifacts)",
+      "nk2_counts": {
+        "ectopic": 3,
+        "missed": 3,
+        "extra": 3,
+        "longshort": 9
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.75
+    },
+    {
+      "case": "synthetic #4 (12 injected artifacts)",
+      "nk2_counts": {
+        "ectopic": 3,
+        "missed": 3,
+        "extra": 3,
+        "longshort": 10
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.75
+    },
+    {
+      "case": "synthetic #5 (12 injected artifacts)",
+      "nk2_counts": {
+        "ectopic": 4,
+        "missed": 3,
+        "extra": 3,
+        "longshort": 10
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.75
+    },
+    {
+      "case": "synthetic #6 (12 injected artifacts)",
+      "nk2_counts": {
+        "ectopic": 3,
+        "missed": 3,
+        "extra": 3,
+        "longshort": 9
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.5
+    },
+    {
+      "case": "synthetic #7 (12 injected artifacts)",
+      "nk2_counts": {
+        "ectopic": 3,
+        "missed": 3,
+        "extra": 3,
+        "longshort": 9
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.75
+    },
+    {
+      "case": "synthetic #8 (12 injected artifacts)",
+      "nk2_counts": {
+        "ectopic": 3,
+        "missed": 3,
+        "extra": 3,
+        "longshort": 9
+      },
+      "detections_identical": true,
+      "corrected_peaks_same_count": true,
+      "max_abs_peak_difference_samples": 0.75
+    }
+  ],
+  "all_ok": true
+}

@@ -42,7 +42,11 @@ const DEFAULT_SETTINGS = {
     calibrationSecs: 8,
     autosaveSecs: 10,
     rmssdWindow: 60,
-    artifactThreshold: 300,
+    artifactThreshold: 300,                  // Δ method: max |RR − previous accepted| (ms)
+    artifactMethod: 'delta',                 // live method: 'delta' | 'percent' | 'median' (see ARTIFACT_METHODS)
+    artifactPercent: 20,                     // percent method: max deviation (% of previous accepted)
+    artifactMedianLevel: 'medium',           // median method: Kubios-style level (MEDIAN_LEVELS)
+    artifactRetro: { method: 'lipponen', correction: 'interpolate', percent: 20, deltaMs: 300, level: 'medium', iterative: true },
     visibleCharts: {
         ecg: true, rr: true, rollingRMSSD: true,
         poincare: true, psd: true, hr: true, vagalProxy: true
@@ -75,6 +79,10 @@ function mergeSettings(p) {
     m.autosaveSecs      = Math.round(clampNum(m.autosaveSecs, 5, 120, DEFAULT_SETTINGS.autosaveSecs));
     m.rmssdWindow       = Math.round(clampNum(m.rmssdWindow, 30, 300, DEFAULT_SETTINGS.rmssdWindow));
     m.artifactThreshold = clampNum(m.artifactThreshold, 50, 1000, DEFAULT_SETTINGS.artifactThreshold);
+    if (!['delta', 'percent', 'median'].includes(m.artifactMethod)) m.artifactMethod = 'delta';
+    m.artifactPercent   = clampNum(m.artifactPercent, 5, 50, DEFAULT_SETTINGS.artifactPercent);
+    if (!['vlow', 'low', 'medium', 'strong', 'vstrong'].includes(m.artifactMedianLevel)) m.artifactMedianLevel = 'medium';
+    m.artifactRetro = { ...DEFAULT_SETTINGS.artifactRetro, ...((p.artifactRetro && typeof p.artifactRetro === 'object') ? p.artifactRetro : {}) };
     m.report.scale      = clampNum(m.report.scale, 1, 10, 4);
     return m;
 }
@@ -134,9 +142,7 @@ function applySettings() {
         if (d) d.textContent = `${appSettings.rmssdWindow} s`;
     }
     // Artifact chips
-    document.querySelectorAll('#artifactGroup .sett-chip').forEach(btn => {
-        btn.classList.toggle('active', parseInt(btn.dataset.val) === appSettings.artifactThreshold);
-    });
+    updateArtifactSettingsSummary();
     // Chart toggles
     ['ecg','rr','rollingRMSSD','poincare','psd','hr','vagalProxy'].forEach(key => {
         const cb = document.getElementById(`show_${key}`);
@@ -315,6 +321,13 @@ let rawRRIntervals = []; // Store all raw data
 let rawTimestamps = []; // Store all raw timestamps
 const REANCHOR_BEATS = 3;  // artifact filter: consistent beats needed to re-anchor (see rrFilterStep)
 let _rrRun = [];          // live: pending run of mutually consistent, Δ-rejected beats [{rr, t}]
+let shownSessionId = null;      // stored session displayed in the Record tab (after restore), else null
+let shownSessionMeta = null;    // { name, startTime, duration } of that session, for the context banner
+let sessionArtifactCfg = null; // artifact filter of the current recording (fixed at connect) / shown session
+let sessionImportInfo = null;  // { filename, format } when the shown session was imported from a file
+let sessionDeviceInfo = null;  // { name, source } of the current recording / restored session (see describeRRSource)
+let _hrPacketsWithoutRR = 0;   // consecutive post-calibration HR packets without RR intervals
+let _ecgCheckTimer = null;
 
 // DOM Elements
 const connectBtn = document.getElementById('connectBtn');
@@ -441,10 +454,10 @@ async function initDB() {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onerror = () => reject(request.error);
-        request.onblocked = () => alert('CardioTrace is open in another tab with an older version. Close the other tabs to finish updating the session database.');
+        request.onblocked = () => notify('CardioTrace is open in another tab with an older version. Close the other tabs to finish updating the session database.', 'warn', { persist: true });
         request.onsuccess = () => {
             db = request.result;
-            db.onversionchange = () => { db.close(); db = null; alert('CardioTrace was updated in another tab. Reload this page to keep saving sessions.'); };
+            db.onversionchange = () => { db.close(); db = null; notify('CardioTrace was updated in another tab. Reload this page to keep saving sessions.', 'warn', { persist: true }); };
             resolve(db);
         };
         request.onupgradeneeded = (event) => {
@@ -517,7 +530,7 @@ function getEffectiveAge() {
 
 function requireDB() {
     if (db) return true;
-    alert('This needs the session database (IndexedDB), which is not available in this browser.');
+    notify('This needs the session database (IndexedDB), which is not available in this browser.', 'error');
     return false;
 }
 
@@ -658,7 +671,7 @@ async function renderSubjectPickerList() {
 async function addAndSelectSubject() {
     const name = document.getElementById('newSubjectName').value.trim();
     const age  = parseInt(document.getElementById('newSubjectAge').value) || 30;
-    if (!name) { alert('Please enter a subject name.'); return; }
+    if (!name) { notify('Enter a subject name first.', 'warn'); return; }
     if (!requireDB()) return;
 
     const id = await saveSubject({ name, age, createdAt: new Date().toISOString() });
@@ -745,7 +758,7 @@ async function renderSubjects() {
 
         content.innerHTML = subjects.sort((a, b) => a.name.localeCompare(b.name)).map(s => {
             const ss      = sessions.filter(x => x.subjectId === s.id);
-            const sriVals = ss.filter(x => x.sri > 0).map(x => x.sri);
+            const sriVals = ss.map(x => sessionSRI(x).score).filter(v => v > 0);
             const avgSRI  = sriVals.length ? Math.round(sriVals.reduce((a,b)=>a+b,0)/sriVals.length) : 0;
             const rmssdVals = ss.map(x => sessionMetrics(x)?.rmssd).filter(v => v > 0);
             const avgRMSSD  = rmssdVals.length ? (rmssdVals.reduce((a,b)=>a+b,0)/rmssdVals.length).toFixed(1) : null;
@@ -931,7 +944,7 @@ function openMonitorWindow() {
         'width=480,height=680,toolbar=no,menubar=no,scrollbars=no,resizable=yes,location=no');
 
     if (!monitorWin) {
-        alert('Popup blocked — please allow popups for this site and try again.');
+        notify('Popup blocked — allow popups for this site and try again.', 'warn');
         URL.revokeObjectURL(url);
         return;
     }
@@ -1105,12 +1118,26 @@ function computeSessionMetrics(session) {
 // stats.avgRR / stats.rmssd are only the last minute before the save: never use them to compare sessions.
 const _metricsCache = new Map();
 function sessionMetrics(s) {
-    const key = `${s.id}:${(s.rrIntervals || []).length}:${(s.rawRRIntervals || []).length}`;
+    const key = `${s.id}:${(s.rrIntervals || []).length}:${(s.rawRRIntervals || []).length}:${s.artifactFilter?.appliedAt || ''}`;
     if (!_metricsCache.has(key)) {
         if (_metricsCache.size > 500) _metricsCache.clear();
         _metricsCache.set(key, computeSessionMetrics(s));
     }
     return _metricsCache.get(key);
+}
+
+function sriClassOf(v) { return v >= 75 ? 'sri-excellent' : v >= 55 ? 'sri-good' : v >= 35 ? 'sri-fair' : v > 0 ? 'sri-poor' : ''; }
+// SRI and LF/HF of a stored session: the saved values, or computed once from its clean series (cached)
+const _sriCache = new Map();
+function sessionSRI(s) {
+    if (s.sri > 0) return { score: s.sri, lfhf: s.sriComponents?.lfhf || null };
+    const key = `${s.id}:${(s.rrIntervals || []).length}:${s.artifactFilter?.appliedAt || ''}`;
+    if (!_sriCache.has(key)) {
+        if (_sriCache.size > 500) _sriCache.clear();
+        const r = (s.rrIntervals || []).length >= 50 ? calculateSRI(s.rrIntervals, s.timestamps) : null;
+        _sriCache.set(key, r ? { score: r.score, lfhf: r.components.lfhf } : { score: null, lfhf: null });
+    }
+    return _sriCache.get(key);
 }
 
 // ── Filter helpers ────────────────────────────────────────
@@ -1179,8 +1206,8 @@ async function renderExportTab() {
 
     const rows = filtered.map(s => {
         const isSel    = exportSelectedIds.has(s.id);
-        const sriClass = s.sri >= 75 ? 'sri-excellent' : s.sri >= 55 ? 'sri-good'
-                       : s.sri >= 35 ? 'sri-fair'      : s.sri > 0  ? 'sri-poor' : '';
+        const sriVal   = sessionSRI(s).score;
+        const sriClass = sriClassOf(sriVal);
         const tags     = (s.tags || []).map(t => `<span class="session-tag">${escapeHTML(t)}</span>`).join('');
         const subHtml  = s.subjectName && s.subjectName !== 'Anonymous'
             ? `<span class="session-subject-chip" style="font-size:11px;">👤 ${escapeHTML(s.subjectName)}</span>`
@@ -1196,11 +1223,11 @@ async function renderExportTab() {
                 ${s.protocolName ? `<span class="export-proto-tag">🔬 ${escapeHTML(s.protocolName)}</span>` : ''}
             </td>
             <td class="export-col-subject">${subHtml}</td>
-            <td class="export-col-date">${formatDate(s.date)}</td>
+            <td class="export-col-date">${formatDate(s.startTime || s.date)}</td>
             <td>${formatDuration(s.duration)}</td>
             <td class="export-col-num">${s.stats?.samples || s.rrIntervals?.length || '—'}</td>
             <td class="export-col-num">${sessionMetrics(s)?.rmssd ? sessionMetrics(s).rmssd.toFixed(1) : '—'}</td>
-            <td class="export-col-num sri-el ${sriClass}" style="font-weight:700;">${s.sri > 0 ? s.sri : '—'}</td>
+            <td class="export-col-num sri-el ${sriClass}" style="font-weight:700;">${sriVal > 0 ? sriVal : '—'}</td>
             <td>${tags || '<span style="color:var(--text-tertiary)">—</span>'}</td>
         </tr>`;
     }).join('');
@@ -1209,7 +1236,8 @@ async function renderExportTab() {
     <table class="export-session-table">
         <thead>
             <tr>
-                <th class="export-col-check"></th>
+                <th class="export-col-check"><input type="checkbox" id="exportCheckAll" title="Select all listed sessions"
+                    ${filtered.length && filtered.every(s => exportSelectedIds.has(s.id)) ? 'checked' : ''}></th>
                 <th>Session · Protocol</th>
                 <th>Subject</th>
                 <th>Date</th>
@@ -1223,6 +1251,10 @@ async function renderExportTab() {
         <tbody>${rows}</tbody>
     </table>`;
 
+    document.getElementById('exportCheckAll')?.addEventListener('change', e => {
+        filtered.forEach(s => e.target.checked ? exportSelectedIds.add(s.id) : exportSelectedIds.delete(s.id));
+        renderExportTab();
+    });
     // Checkbox bindings — toggle without full re-render
     list.querySelectorAll('.export-row-check').forEach(cb => {
         cb.addEventListener('change', e => { e.stopPropagation(); toggleExportSession(parseInt(cb.dataset.id)); });
@@ -1255,7 +1287,7 @@ function updateExportSelectionUI() {
         countEl.classList.toggle('has-selection', n > 0);
     }
     const off = n === 0;
-    ['exportSummaryBtn', 'exportZipBtn', 'exportJsonBtn'].forEach(id => {
+    ['exportSummaryBtn', 'exportZipBtn', 'exportJsonBtn', 'exportArtifactBtn'].forEach(id => {
         const btn = document.getElementById(id);
         if (btn) btn.disabled = off;
     });
@@ -1578,7 +1610,7 @@ async function renderTrendsView() {
     }
 
     Plotly.react('analyzeChartSRI',
-        buildTraces(s => s.sri > 0 ? s.sri : null, 'SRI'),
+        buildTraces(s => sessionSRI(s).score || null, 'SRI'),
         { ...baseLayout, yaxis: { ...baseLayout.yaxis, title: 'SRI', range: [0, 105] } }, cfg);
 
     Plotly.react('analyzeChartRMSSD',
@@ -1586,7 +1618,7 @@ async function renderTrendsView() {
         { ...baseLayout, yaxis: { ...baseLayout.yaxis, title: 'RMSSD (ms)' } }, cfg);
 
     Plotly.react('analyzeChartLFHF',
-        buildTraces(s => s.sriComponents?.lfhf > 0 ? Math.round(s.sriComponents.lfhf * 100) / 100 : null, 'LF/HF'),
+        buildTraces(s => sessionSRI(s).lfhf > 0 ? Math.round(sessionSRI(s).lfhf * 100) / 100 : null, 'LF/HF'),
         { ...baseLayout, yaxis: { ...baseLayout.yaxis, title: 'LF/HF Ratio' } }, cfg);
 }
 
@@ -1634,7 +1666,7 @@ function toggleComparisonSession(id) {
         comparisonSelectedIds.delete(id);
     } else {
         if (comparisonSelectedIds.size >= 6) {
-            alert('You can compare up to 6 sessions at a time.');
+            notify('You can compare up to 6 sessions at a time.', 'warn');
             return;
         }
         comparisonSelectedIds.add(id);
@@ -1783,7 +1815,7 @@ async function renderSummaryView() {
         </thead>
         <tbody>
         ${groups.map((g, gi) => {
-            const sriSt  = stats(g.ss, s => s.sri > 0 ? s.sri : null);
+            const sriSt  = stats(g.ss, s => sessionSRI(s).score || null);
             const rmssdSt = stats(g.ss, s => sessionMetrics(s)?.rmssd || null);
             const hrSt   = stats(g.ss, s => sessionMetrics(s)?.mean_hr || null);
             const sriClass = sriSt
@@ -2077,10 +2109,10 @@ function addEditorPhase() {
 
 async function saveProtocolFromEditor() {
     const name = document.getElementById('protocolEditorName').value.trim();
-    if (!name) { alert('Please enter a protocol name.'); return; }
+    if (!name) { notify('Enter a protocol name.', 'warn'); return; }
     if (!requireDB()) return;
-    if (protocolEditorState.phases.length === 0) { alert('Add at least one phase.'); return; }
-    if (protocolEditorState.phases.some(ph => !(ph.durationSecs > 0))) { alert('Every phase needs a duration longer than 0 s.'); return; }
+    if (protocolEditorState.phases.length === 0) { notify('Add at least one phase.', 'warn'); return; }
+    if (protocolEditorState.phases.some(ph => !(ph.durationSecs > 0))) { notify('Every phase needs a duration longer than 0 s.', 'warn'); return; }
     protocolEditorState.phases.forEach((ph, i) => { ph.name = (ph.name || '').trim() || `Phase ${i + 1}`; });
 
     const id = await saveProtocol({ name, phases: protocolEditorState.phases }, protocolEditorState.id || null);
@@ -2365,13 +2397,14 @@ function calculatePSD(rrIntervals, timestamps) {
 
 // Clean RR interval data - remove artifacts and invalid values
 // This version is for batch processing (e.g., for exports with raw data option)
-function cleanRRData(rrIntervals, timestamps) {
+function cleanRRData(rrIntervals, timestamps, cfg = null) {
     // Same rules as the live filter (rrFilterStep), so restored old-format sessions are cleaned identically
+    const c = cfg || liveArtifactCfg();
     const cleaned = { rr: [], times: [] };
     const run = [];
     for (let i = 0; i < rrIntervals.length; i++) {
-        const last = cleaned.rr.length ? cleaned.rr[cleaned.rr.length - 1] : null;
-        for (const b of rrFilterStep(rrIntervals[i], timestamps[i], last, run)) {
+        const ref = rrReference(cleaned.rr, c);
+        for (const b of rrFilterStep(rrIntervals[i], timestamps[i], ref, run, c)) {
             cleaned.rr.push(b.rr);
             cleaned.times.push(b.t);
         }
@@ -2791,16 +2824,16 @@ function downloadFileIOS(content, filename, mimeType) {
         }).catch((error) => {
             // User cancelled or share failed
             if (error.name !== 'AbortError') {
-                alert('Share failed. Data copied to clipboard instead.');
+                notify('Share failed — the data were copied to the clipboard instead.', 'warn');
                 navigator.clipboard.writeText(content);
             }
         });
     } else {
         // No share API - copy to clipboard
         navigator.clipboard.writeText(content).then(() => {
-            alert('Data copied to clipboard! Paste in Notes or Files app to save.');
+            notify('Data copied to the clipboard — paste them in Notes or Files to save.', 'success');
         }).catch(() => {
-            alert('Unable to export on this device. Please use a desktop browser.');
+            notify('Unable to export on this device. Please use a desktop browser.', 'error');
         });
     }
     return true;
@@ -2856,8 +2889,8 @@ async function saveSession(sessionData, sessionId = null) {
         const objectStore = transaction.objectStore(STORE_NAME);
 
         const session = {
-            timestamp: Date.now(),
-            date: new Date().toISOString(),
+            timestamp: sessionData.timestamp ?? Date.now(),
+            date: sessionData.date ?? new Date().toISOString(),
             startTime: sessionData.startTime || sessionStartTime,
             duration: sessionData.duration !== undefined
                 ? sessionData.duration
@@ -2875,10 +2908,13 @@ async function saveSession(sessionData, sessionId = null) {
                 avgRR: sessionData.avgRR,
                 rmssd: sessionData.rmssd
             },
-            sri: sessionData.sri || sriScore,
-            sriComponents: sessionData.sriComponents || sriComponents,
-            peakHR: sessionData.peakHR || peakHR,
+            sri: sessionData.sri ?? sriScore,
+            sriComponents: sessionData.sriComponents ?? sriComponents,
+            peakHR: sessionData.peakHR ?? peakHR,
             calibrationSecs: sessionData.calibrationSecs ?? null,
+            device:       sessionData.device ?? null,
+            artifactFilter: sessionData.artifactFilter ?? null,
+            importedFrom: sessionData.importedFrom ?? null,
             subjectId:    sessionData.subjectId    !== undefined ? sessionData.subjectId    : currentSubjectId,
             subjectName:  sessionData.subjectName  !== undefined ? sessionData.subjectName  : currentSubjectName,
             protocolId:   sessionData.protocolId   !== undefined ? sessionData.protocolId   : (activeProtocol?.id   ?? null),
@@ -2929,7 +2965,7 @@ async function loadSessions() {
 // The live recording keeps being auto-saved under currentSessionId: deleting it would only make it reappear
 function isLiveSession(id) { return isConnected && currentSessionId != null && id === currentSessionId; }
 async function confirmAndDeleteSession(id) {
-    if (isLiveSession(id)) { alert('This session is being recorded. Disconnect first, then delete it.'); return false; }
+    if (isLiveSession(id)) { notify('This session is being recorded. Disconnect first, then delete it.', 'warn'); return false; }
     if (!confirm('Delete this session?')) return false;
     await deleteSession(id);
     return true;
@@ -3039,6 +3075,8 @@ async function autoSaveSession() {
             sriComponents: { ...sriComponents },
             peakHR: peakHR,
             calibrationSecs: sessionCalibrationSecs,
+            device: sessionDeviceInfo,
+            artifactFilter: sessionArtifactCfg,
             subjectId:    currentSubjectId,
             subjectName:  currentSubjectName,
             protocolId:   activeProtocol?.id   ?? null,
@@ -3080,6 +3118,34 @@ function stopAutoSave() {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// Toast notifications — non-blocking replacement for alert()
+// notify(text, kind = 'info' | 'success' | 'warn' | 'error', { detail: [lines], persist, timeout })
+// ══════════════════════════════════════════════════════════════════════════
+function notify(text, kind = 'info', opt = {}) {
+    let host = document.getElementById('toastHost');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'toastHost';
+        host.setAttribute('aria-live', 'polite');
+        document.body.appendChild(host);
+    }
+    const el = document.createElement('div');
+    el.className = `toast toast--${kind}`;
+    el.setAttribute('role', kind === 'error' || kind === 'warn' ? 'alert' : 'status');
+    const icon = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '⛔' }[kind] || 'ℹ️';
+    const detail = (opt.detail || []).filter(Boolean);
+    el.innerHTML = `<span class="toast-icon">${icon}</span><div class="toast-body"><div class="toast-text">${escapeHTML(text)}</div>` +
+        (detail.length ? `<ul class="toast-detail">${detail.map(l => `<li>${escapeHTML(l)}</li>`).join('')}</ul>` : '') +
+        `</div><button class="toast-close" type="button" aria-label="Dismiss">✕</button>`;
+    const close = () => { el.classList.add('is-leaving'); setTimeout(() => el.remove(), 250); };
+    el.querySelector('.toast-close').addEventListener('click', close);
+    host.appendChild(el);
+    while (host.children.length > 4) host.firstElementChild.remove();
+    if (!opt.persist) setTimeout(close, opt.timeout || (kind === 'error' ? 12000 : detail.length ? 9000 : 5000));
+    return el;
+}
+
 // Escape user-provided text (tags, names) before it is placed in innerHTML / attributes
 function escapeHTML(v) {
     return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -3090,6 +3156,7 @@ async function updateHistoryBadge() {
     try {
         const sessions = await loadSessions();
         historyBadge.textContent = sessions.length;
+        historyBadge.style.display = sessions.length ? '' : 'none';
 
         // Update tag filter options
         const allTags = new Set();
@@ -3132,7 +3199,7 @@ function filterAndSortSessions(sessions, overrides = {}) {
         const matchesSearch = !searchTerm ||
             session.filename.toLowerCase().includes(searchTerm) ||
             (session.subjectName || '').toLowerCase().includes(searchTerm) ||
-            formatDate(session.date).toLowerCase().includes(searchTerm);
+            formatDate(session.startTime || session.date).toLowerCase().includes(searchTerm);
         const matchesTag = !selectedTag || (session.tags && session.tags.includes(selectedTag));
         const matchesSubject = !selectedSubject ||
             (selectedSubject === 'anonymous'
@@ -3174,10 +3241,12 @@ async function renderHistory() {
             <div class="session-card" data-id="${session.id}">
                 <div class="session-header">
                     <div class="session-info">
-                        <div class="session-date">${formatDate(session.date)}</div>
-                        <div class="session-time">Duration: ${formatDuration(session.duration)}</div>
-                        <div class="session-filename">${escapeHTML(session.filename || 'polar-h10-data')}</div>
+                        <div class="session-date">${escapeHTML(session.filename || 'polar-h10-data')}</div>
+                        <div class="session-time">${formatDate(session.startTime || session.date)} · ${formatDuration(session.duration)}</div>
                         ${session.subjectName && session.subjectName !== 'Anonymous' ? `<div class="session-subject-chip">👤 ${escapeHTML(session.subjectName)}</div>` : ''}
+                        ${session.importedFrom ? `<div class="session-source-chip" title="${escapeHTML(session.importedFrom.format || '')}">📥 Imported · ${escapeHTML(session.importedFrom.filename || '')}</div>`
+                          : session.device ? `<div class="session-source-chip">${session.device.source === 'ppg' ? '⌚' : '🫀'} ${escapeHTML(describeRRSource(session.device))}</div>` : ''}
+                        ${session.artifactFilter?.appliedAt ? `<div class="session-source-chip" title="${escapeHTML(describeArtifactCfg(session.artifactFilter))}">🧹 ${escapeHTML(ARTIFACT_METHODS[session.artifactFilter.method]?.label || '')}</div>` : ''}
                         ${session.tags && session.tags.length > 0 ? `
                             <div class="session-tags">
                                 ${session.tags.map(tag => `<span class="session-tag">${escapeHTML(tag)}</span>`).join('')}
@@ -3185,6 +3254,7 @@ async function renderHistory() {
                         ` : ''}
                     </div>
                     <div class="session-actions">
+                        <button class="session-action-btn open" data-id="${session.id}" title="Open in the Record tab">▶ Open</button>
                         <button class="session-action-btn download" data-id="${session.id}" title="Download">💾</button>
                         <button class="session-action-btn delete" data-id="${session.id}" title="Delete">🗑️</button>
                     </div>
@@ -3210,8 +3280,8 @@ async function renderHistory() {
                     </div>
                     <div class="session-stat sri-el">
                         <div class="session-stat-label">SRI</div>
-                        <div class="session-stat-value ${session.sri >= 75 ? 'sri-excellent' : session.sri >= 55 ? 'sri-good' : session.sri >= 35 ? 'sri-fair' : session.sri > 0 ? 'sri-poor' : ''}">
-                            ${session.sri !== null && session.sri !== undefined && session.sri > 0 ? session.sri : '--'}
+                        <div class="session-stat-value ${sriClassOf(sessionSRI(session).score)}">
+                            ${sessionSRI(session).score > 0 ? sessionSRI(session).score : '--'}
                         </div>
                     </div>
                     <div class="session-stat">
@@ -3229,6 +3299,10 @@ async function renderHistory() {
                     restoreSession(parseInt(card.dataset.id));
                 }
             });
+        });
+
+        document.querySelectorAll('.session-action-btn.open').forEach(btn => {
+            btn.addEventListener('click', e => { e.stopPropagation(); restoreSession(parseInt(btn.dataset.id)); });
         });
 
         document.querySelectorAll('.session-action-btn.download').forEach(btn => {
@@ -3267,10 +3341,8 @@ async function renderHistoryTable() {
         }
 
         historyTableBody.innerHTML = filtered.map(session => {
-            const sriClass = session.sri >= 75 ? 'sri-excellent'
-                           : session.sri >= 55 ? 'sri-good'
-                           : session.sri >= 35 ? 'sri-fair'
-                           : session.sri > 0  ? 'sri-poor' : '';
+            const sriVal   = sessionSRI(session).score;
+            const sriClass = sriClassOf(sriVal);
             const tagsHtml = session.tags?.length
                 ? session.tags.map(t => `<span class="session-tag">${escapeHTML(t)}</span>`).join('')
                 : '<span style="color:var(--text-tertiary)">—</span>';
@@ -3278,14 +3350,14 @@ async function renderHistoryTable() {
             return `
             <tr class="table-row" data-id="${session.id}">
                 <td><input type="checkbox" class="row-select" data-id="${session.id}"></td>
-                <td class="table-date">${formatDate(session.date)}</td>
+                <td class="table-date">${formatDate(session.startTime || session.date)}</td>
                 <td class="table-name">${escapeHTML(session.filename || 'polar-h10-data')}</td>
                 <td>${session.subjectName && session.subjectName !== 'Anonymous' ? `<span class="session-subject-chip">👤 ${escapeHTML(session.subjectName)}</span>` : '<span style="color:var(--text-tertiary)">—</span>'}</td>
                 <td>${formatDuration(session.duration)}</td>
                 <td>${session.stats.samples}</td>
                 <td>${sessionMetrics(session)?.mean_rr ? sessionMetrics(session).mean_rr.toFixed(1) + ' ms' : '—'}</td>
                 <td>${sessionMetrics(session)?.rmssd ? sessionMetrics(session).rmssd.toFixed(1) + ' ms' : '—'}</td>
-                <td class="sri-el ${sriClass}" style="font-weight:700;">${session.sri > 0 ? session.sri : '—'}</td>
+                <td class="sri-el ${sriClass}" style="font-weight:700;">${sriVal > 0 ? sriVal : '—'}</td>
                 <td>${session.eventMarkers?.length || 0}</td>
                 <td>${tagsHtml}</td>
                 <td class="table-actions">
@@ -3369,6 +3441,12 @@ async function restoreSession(id) {
         sessionTags = session.tags || [];
         sessionStartTime = session.startTime || session.timestamp;
         sessionCalibrationSecs = session.calibrationSecs ?? null;
+        sessionDeviceInfo = session.device ?? null;
+        sessionArtifactCfg = session.artifactFilter ?? null;
+        shownSessionId = session.id;
+        shownSessionMeta = { name: session.filename || 'Session', startTime: session.startTime || session.timestamp, duration: session.duration || 0,
+                             subject: session.subjectName && session.subjectName !== 'Anonymous' ? session.subjectName : '' };
+        sessionImportInfo = session.importedFrom ?? null;
 
         // Calculate or restore SRI using the SAME function
         const sriResult = appSettings.showSRI === false ? null : calculateSRI(rrIntervals, timestamps);
@@ -3404,6 +3482,11 @@ async function restoreSession(id) {
         updateSRI();
         renderAnnotations();
         renderTags();
+        setChartPlaceholder('ecgChart', '〰️', 'The ECG is shown only while recording live (it is not stored)');
+        const mHR = sessionMetrics(session);                   // no live heart rate: show the session mean
+        hrValue.textContent = mHR ? Math.round(mHR.mean_hr) : '--';
+        hrValue.title = 'Mean heart rate of the saved session';
+        updateSessionBanner();
 
         await updateHistoryBadge();
 
@@ -3435,7 +3518,7 @@ async function downloadSession(id) {
 async function bulkDownloadSessions(filterOverrides = {}) {
     const sessions = await loadSessions();
     const filtered = filterAndSortSessions(sessions, filterOverrides);
-    if (filtered.length === 0) { alert('No sessions to download.'); return; }
+    if (filtered.length === 0) { notify('No sessions match the current filters.', 'warn'); return; }
 
     const format = bulkFormatSelect.value;
     bulkDownloadBtn.disabled = true;
@@ -3480,6 +3563,182 @@ async function bulkDownloadSessions(filterOverrides = {}) {
         bulkDownloadBtn.disabled = false;
         bulkDownloadBtn.textContent = '⬇ Download';
     }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// RR file import — TXT / CSV / TSV from CardioTrace, Kubios, Elite HRV and other apps.
+// Imported files become ordinary stored sessions (raw = file values, clean = same artifact filter as live).
+// ══════════════════════════════════════════════════════════════════════════
+// RFC 4180 reader (quoted fields may contain the delimiter, quotes and line breaks)
+function parseDelimited(text, delim) {
+    const rows = []; let row = [], field = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (q) {
+            if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+            else field += c;
+        } else if (c === '"') q = true;
+        else if (c === delim) { row.push(field); field = ''; }
+        else if (c === '\n' || c === '\r') {
+            if (c === '\r' && text[i + 1] === '\n') i++;
+            row.push(field); rows.push(row); row = []; field = '';
+        } else field += c;
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return rows;
+}
+
+function parseNumberLoose(v, decimalComma) {
+    let t = String(v ?? '').trim().replace(/^"|"$/g, '');
+    if (decimalComma) t = t.replace(',', '.');
+    if (!/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t)) return NaN;
+    return Number(t);
+}
+function _median(a) {   // pandas-style median (mean of the two middle values for an even count)
+    const b = Array.from(a).sort((x, y) => x - y), n = b.length;
+    if (!n) return NaN;
+    return n % 2 ? b[n >> 1] : (b[n / 2 - 1] + b[n / 2]) / 2;
+}
+
+// Returns { rr (ms), times (s) | null, events, name, tags, startTime, calibrationSecs, device, format }
+function parseRRFile(text, fileName = '') {
+    text = String(text).replace(/^﻿/, '');
+    const out = { rr: [], times: null, events: [], name: null, tags: [], startTime: null, calibrationSecs: null, device: null, format: '' };
+
+    // 1) CardioTrace CSV (metadata header + Timestamp / RR / Event / Annotation)
+    const ctStart = text.search(/^Timestamp \(s\),RR Interval \(ms\)/m);
+    if (ctStart >= 0) {
+        const meta = {};
+        text.slice(0, ctStart).split(/\r?\n/).forEach(l => { const m = l.match(/^#\s*([^:]+):\s*(.*)$/); if (m) meta[m[1].trim()] = m[2].trim(); });
+        const rows = parseDelimited(text.slice(ctStart), ',').slice(1);
+        out.times = [];
+        for (const r of rows) {
+            const t = parseNumberLoose(r[0]), v = parseNumberLoose(r[1]);
+            if (!isFinite(t) || !isFinite(v)) continue;
+            out.rr.push(v); out.times.push(t);
+            const types = (r[2] || '').split(' | '), notes = (r[3] || '').split(' | ');
+            types.forEach((type, k) => {
+                if (!type) return;
+                const annotation = notes[k] || '';
+                out.events.push({ time: t, type, annotation, label: type + (annotation ? `: ${annotation}` : '') });
+            });
+        }
+        if (meta.Date) { const d = Date.parse(meta.Date.replace(' ', 'T') + 'Z'); if (isFinite(d)) out.startTime = d; }
+        if (meta.Filename) out.name = meta.Filename;
+        if (meta.Tags && meta.Tags !== 'None') out.tags = meta.Tags.split(', ').filter(Boolean);
+        const cal = parseFloat(meta['Calibration Period']); if (isFinite(cal)) out.calibrationSecs = cal;
+        if (meta.Device && meta.Device !== 'not recorded') {
+            const [name, label] = meta.Device.split(' — ');
+            out.device = { name, source: Object.keys(RR_SOURCES).find(k => RR_SOURCES[k] === label) || 'unknown' };
+        }
+        out.format = `CardioTrace CSV${/^Raw/.test(meta['Data Type'] || '') ? ' (raw)' : ''}`;
+        return out;
+    }
+
+    // 2) Generic: one value per line, or a delimited table with an RR column
+    const lines = text.split(/\r\n|\n|\r/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+    const sample = lines.slice(0, 60);
+    // A single column written with decimal commas ("0,812"): every numeric line is exactly one such number
+    const numericSample = sample.filter(l => /\d/.test(l));
+    // ...and read that way the values look like RR in s or ms (otherwise "1,812" is a two-column CSV row)
+    const dcMedian = _median(numericSample.map(l => parseNumberLoose(l, true)));
+    const decimalCommaOnly = numericSample.length > 0 && numericSample.every(l => /^[-+]?\d+,\d+$/.test(l)) &&
+        ((dcMedian >= 0.25 && dcMedian <= 2) || (dcMedian >= 250 && dcMedian <= 2000));
+    let delim = null;
+    if (!decimalCommaOnly) {
+        for (const d of ['\t', ';', ',']) {
+            const n = sample.filter(l => l.includes(d)).length;
+            if (n >= Math.max(1, sample.length * 0.8)) { delim = d; break; }
+        }
+    }
+    let values = [], colName = '';
+    if (!delim) {
+        values = lines.map(l => parseNumberLoose(l, true));
+        out.format = 'RR list (one value per line)';
+    } else {
+        const rows = parseDelimited(lines.join('\n'), delim).map(r => r.map(x => x.trim()));
+        const decComma = delim !== ',';
+        const isNumRow = r => r.some(x => isFinite(parseNumberLoose(x, decComma)));
+        const header = rows.length && rows[0].some(x => x && !isFinite(parseNumberLoose(x, decComma))) ? rows[0] : null;
+        const data = (header ? rows.slice(1) : rows).filter(isNumRow);
+        const ncol = Math.max(0, ...data.slice(0, 50).map(r => r.length));
+        const cols = [];
+        for (let j = 0; j < ncol; j++) {
+            const v = data.map(r => parseNumberLoose(r[j], decComma));
+            const fin = v.filter(isFinite);
+            if (fin.length < data.length * 0.5) continue;
+            const med = _median(fin);
+            let mono = fin.length > 20;
+            for (let i = 1; i < fin.length && mono; i++) if (fin[i] < fin[i - 1]) mono = false;
+            cols.push({ j, v, name: header ? header[j] || '' : '', plausible: ((med >= 250 && med <= 2000) || (med >= 0.25 && med <= 2)) && !mono });
+        }
+        const named = cols.find(c => /(^|[^a-z])(rr|rri|ibi|nn|ppi|r-r|interval|beat)/i.test(c.name) && !/time|stamp|date|bpm|\bhr\b/i.test(c.name));
+        const pick = named || cols.find(c => c.plausible);
+        if (!pick) throw new Error('no column that looks like RR intervals');
+        values = pick.v; colName = pick.name;
+        out.format = `${delim === '\t' ? 'TSV' : 'CSV'} table${colName ? ` (column "${colName}")` : ` (column ${pick.j + 1})`}`;
+        if (/\(s\)|\bsec|\bs\b/i.test(colName) && !/ms/i.test(colName)) values = values.map(x => x * 1000);
+        else if (!/ms/i.test(colName) && _median(values.filter(isFinite)) < 10) values = values.map(x => x * 1000);
+    }
+    values = values.filter(v => isFinite(v) && v > 0);
+    if (!delim && _median(values) < 10) values = values.map(v => v * 1000);     // RR in seconds (e.g. Kubios)
+    out.rr = values;
+    return out;
+}
+
+// Build the stored-session record of one parsed file (pure: no globals except the active subject)
+function buildImportedSession(parsed, file) {
+    const raw = parsed.rr;
+    if (raw.length < 10) throw new Error(`only ${raw.length} RR values found`);
+    const plausible = raw.filter(v => v >= 250 && v <= 2000).length;
+    if (plausible < raw.length * 0.5) throw new Error('the values do not look like RR intervals (expected ms or s)');
+    let times = parsed.times;
+    if (!times || times.length !== raw.length) {                       // beat times from cumulative RR
+        times = []; let acc = 0;
+        for (const v of raw) { acc += v / 1000; times.push(Math.round(acc * 1000) / 1000); }
+    }
+    const clean = cleanRRData(raw, times);
+    const duration = Math.max(0, Math.round(times[times.length - 1] || 0));
+    const startEstimated = parsed.startTime == null;
+    const startTime = startEstimated ? (file.lastModified || Date.now()) - duration * 1000 : parsed.startTime;
+    const sri = clean.rr.length >= 50 ? calculateSRI(clean.rr, clean.times) : null;
+    const m = computeSessionMetrics({ rrIntervals: clean.rr, rawRRIntervals: raw });
+    return {
+        timestamp: startTime + duration * 1000, date: new Date(startTime + duration * 1000).toISOString(),
+        startTime, duration,
+        filename: parsed.name || String(file.name || 'imported').replace(/\.[^.]+$/, '') || 'imported',
+        rrIntervals: clean.rr, timestamps: clean.times, rawRRIntervals: raw, rawTimestamps: times,
+        eventMarkers: parsed.events, annotations: parsed.events.map(e => ({ ...e })), tags: parsed.tags,
+        avgRR: m ? m.mean_rr : null, rmssd: m ? m.rmssd : null,
+        sri: sri ? sri.score : 0, sriComponents: sri ? sri.components : { rmssd: 0, lfhf: 0, hrRecovery: 0 }, peakHR: sri ? sri.peakHR : 0,
+        calibrationSecs: parsed.calibrationSecs, device: parsed.device,
+        importedFrom: { filename: file.name || '', format: parsed.format, importedAt: new Date().toISOString(), startEstimated },
+        subjectId: currentSubjectId, subjectName: currentSubjectName, protocolId: null, protocolName: null
+    };
+}
+
+async function importRRFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    if (!requireDB()) return;
+    const lines = [];
+    for (const file of files) {
+        try {
+            const parsed = parseRRFile(await file.text(), file.name);
+            const rec = buildImportedSession(parsed, file);
+            await saveSession(rec);
+            const q = rec.rawRRIntervals.length ? Math.round(rec.rrIntervals.length / rec.rawRRIntervals.length * 1000) / 10 : 0;
+            lines.push(`✓ ${file.name}: ${rec.rawRRIntervals.length} intervals, ${rec.rrIntervals.length} kept by the artifact filter (${q} %) — ${parsed.format}` +
+                (rec.importedFrom.startEstimated ? '; start time estimated from the file date' : ''));
+        } catch (e) {
+            lines.push(`✗ ${file.name}: ${e.message || e}`);
+        }
+    }
+    await updateHistoryBadge();
+    if (currentTab === 'history') await renderHistory();
+    const failed = lines.filter(l => l.startsWith('✗')).length, okN = lines.length - failed;
+    notify(`Imported ${okN} of ${lines.length} file(s)${okN && currentSubjectName !== 'Anonymous' ? ` — assigned to ${currentSubjectName}` : ''}`,
+        failed ? (okN ? 'warn' : 'error') : 'success', { detail: lines });
 }
 
 // Event type panel controls
@@ -3737,6 +3996,12 @@ addEventBtn.addEventListener('click', addEventMarker);
 addTagBtn.addEventListener('click', addTag);
 clearAllBtn.addEventListener('click', clearAllSessions);
 bulkDownloadBtn.addEventListener('click', bulkDownloadSessions);
+document.getElementById('importRRBtn')?.addEventListener('click', () => document.getElementById('importRRFile').click());
+document.getElementById('importRRFile')?.addEventListener('change', async e => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';                                  // allow importing the same file again
+    await importRRFiles(files);
+});
 
 // Protocol management
 document.getElementById('changeProtocolBtn').addEventListener('click', openProtocolPicker);
@@ -3902,6 +4167,8 @@ document.getElementById('settingsRMSSDWindow').addEventListener('input', (e) => 
 document.querySelectorAll('#artifactGroup .sett-chip').forEach(btn => {
     btn.addEventListener('click', () => {
         appSettings.artifactThreshold = parseInt(btn.dataset.val);
+        appSettings.artifactMethod = 'delta';
+        updateArtifactSettingsSummary();
         document.querySelectorAll('#artifactGroup .sett-chip').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         saveSettings();
@@ -3988,6 +4255,7 @@ async function performSessionReset(showConfirm = true) {
     currentSessionId = null;
     _sessionGen++;
     if (!isConnected) {
+        sessionDeviceInfo = null; sessionImportInfo = null; sessionArtifactCfg = null; shownSessionId = null;   // nothing live: the shown session is gone
         // Nothing is streaming: no baseline until the next connect() finishes calibrating
         calibrationStartTime = null;
         calibrationEndTime = null;
@@ -4001,7 +4269,7 @@ async function performSessionReset(showConfirm = true) {
     _lastAutoSaveId = null;
 
     // Reset UI
-    hrValue.textContent = '--';
+    hrValue.textContent = '--'; hrValue.title = '';
     rmssdValue.textContent = '--';
     samplesValue.textContent = '0';
     avgRRValue.textContent = '--';
@@ -4039,6 +4307,8 @@ async function performSessionReset(showConfirm = true) {
     renderTags();
 
     if (isConnected) startAutoSave();
+    shownSessionMeta = isConnected ? null : shownSessionMeta;
+    updateSessionBanner();
 
     return true;
 }
@@ -4047,7 +4317,7 @@ async function performSessionReset(showConfirm = true) {
 async function connect() {
     if (!navigator.bluetooth) {
         status.textContent = 'Bluetooth Not Supported';
-        alert('Web Bluetooth requires Chrome or Edge on desktop/Android over a secure (HTTPS) connection.');
+        notify('Web Bluetooth needs Chrome or Edge on desktop / Android over HTTPS. You can still import RR files from History.', 'error', { persist: true });
         return;
     }
     try {
@@ -4119,6 +4389,23 @@ async function connect() {
         _sessionGen++;
         lastPacketTime = Date.now();
 
+        // Device / RR source of this recording
+        sessionDeviceInfo = { name: device.name || 'Unknown device', source: classifyRRSource(device.name) };
+        sessionImportInfo = null;
+        _hrPacketsWithoutRR = 0;
+        clearDeviceNotice();
+        if (sessionDeviceInfo.source === 'ppg') {
+            showDeviceNotice('Pulse-derived intervals (PPG): less precise than a chest strap and sensitive to movement. ' +
+                'Check data quality and interpret HRV indices with caution.', 'info');
+        }
+        clearTimeout(_ecgCheckTimer);
+        _ecgCheckTimer = setTimeout(() => {          // ECG is Polar-only: say so instead of an empty plot
+            if (isConnected && ecgData.length === 0) setChartPlaceholder('ecgChart', '〰️', 'ECG not available for this device');
+        }, 6000);
+
+        sessionArtifactCfg = liveArtifactCfg();      // fixed for this recording: one criterion per session
+        shownSessionId = null;
+
         // Start calibration period
         _rrRun = [];
         isCalibrating = true;
@@ -4151,6 +4438,7 @@ async function connect() {
 
         connectBtn.disabled = true;
         disconnectBtn.disabled = false;
+        updateSessionBanner();
         exportBtn.disabled = false;
         copyBtn.disabled = false;
         reportBtn.disabled = false;
@@ -4176,6 +4464,9 @@ function disconnect(skipConfirm = false) {
     if (skipConfirm || confirm('Disconnect device? Data will be saved to history.')) {
         stopAutoSave();
         clearTimeout(calibrationTimeout);
+        clearTimeout(_ecgCheckTimer);
+        clearDeviceNotice();
+        setChartPlaceholder('ecgChart', null);
         stopSignalMonitor();
         releaseWakeLock();
         lastCWTResult = null; _cwtLastUpdate = 0; ecgClockT = null;
@@ -4205,6 +4496,8 @@ function disconnect(skipConfirm = false) {
                     sriComponents: { ...sriComponents },
                     peakHR: peakHR,
                     calibrationSecs: sessionCalibrationSecs,
+                    device: sessionDeviceInfo,
+                    artifactFilter: sessionArtifactCfg,
                     subjectId:    currentSubjectId,
                     subjectName:  currentSubjectName,
                     protocolId:   activeProtocol?.id   ?? null,
@@ -4221,7 +4514,7 @@ function disconnect(skipConfirm = false) {
                     updateHistoryBadge();
                 }).catch(err => {
                     console.error('Final save failed:', err);
-                    alert('The session could not be saved to history (' + (err && err.message || err) + '). Export it before closing the page.');
+                    notify('The session could not be saved to History (' + (err && err.message || err) + '). Export it before closing the page.', 'error', { persist: true });
                 });
             }
             if (device.gatt.connected) device.gatt.disconnect();
@@ -4254,7 +4547,7 @@ function disconnect(skipConfirm = false) {
         sriHistory = [];
         peakHR = 0;
 
-        hrValue.textContent = '--';
+        hrValue.textContent = '--'; hrValue.title = '';
         rmssdValue.textContent = '--';
         samplesValue.textContent = '0';
         avgRRValue.textContent = '--';
@@ -4298,12 +4591,13 @@ function disconnect(skipConfirm = false) {
         status.classList.remove('connected');
         renderAnnotations();
         renderTags();
+        updateSessionBanner();
     }
 }
 
 // Reset session
 function resetSession() {
-    performSessionReset(true);
+    performSessionReset(isConnected);    // a saved session shown offline stays in History: closing it loses nothing
     console.log('✓ Session reset');
 }
 
@@ -4391,6 +4685,43 @@ function flashStatCards() {
     });
 }
 
+// ── RR source / device description ───────────────────────────────────────
+// Any device exposing the standard Bluetooth Heart Rate service (0x180D) can stream RR intervals.
+// The kind of sensor cannot be read from the standard profile: it is inferred from the ECG stream (Polar PMD)
+// or from well-known product names, and is 'unknown' otherwise.
+const RR_SOURCES = {
+    ecg:     'ECG chest strap',
+    ppg:     'optical pulse sensor (PPG)',
+    unknown: 'unknown sensor (standard BLE Heart Rate profile)',
+    file:    'imported file'
+};
+function classifyRRSource(name) {
+    const n = String(name || '');
+    if (/verity|\bOH1\b|rhythm|scosche|whoop|forerunner|fenix|f[eē]nix|venu|vivo|instinct|epix|enduro|amazfit|mi band|coros|ignite|vantage|grit|pacer|unite|watch/i.test(n)) return 'ppg';
+    if (/\bH(10|9|7|6)\b|\bHRM|tickr|polar h|coospo h|magene h|movesense|suunto smart|chest|strap/i.test(n)) return 'ecg';
+    return 'unknown';
+}
+function describeRRSource(info) {
+    if (!info) return 'not recorded';
+    return `${info.name || 'Unknown device'} — ${RR_SOURCES[info.source] || RR_SOURCES.unknown}`;
+}
+
+// Non-blocking notice under the connection controls (replaces nothing; hidden when empty)
+function showDeviceNotice(text, kind = 'warn') {
+    let el = document.getElementById('deviceNotice');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'deviceNotice';
+        el.setAttribute('role', 'status');
+        const anchor = document.getElementById('status');
+        (anchor?.closest('.section-content') || controlsPanel || document.body).appendChild(el);
+    }
+    el.className = `device-notice device-notice--${kind}`;
+    el.textContent = text;
+    el.hidden = !text;
+}
+function clearDeviceNotice() { showDeviceNotice(''); }
+
 // Handle HR data
 function handleHRData(event) {
     const value = event.target.value;
@@ -4402,10 +4733,20 @@ function handleHRData(event) {
 
     currentHR = hr;
     hrValue.textContent = hr;
+    if (hrValue.title) hrValue.title = '';
     updateHRZone(hr);
     lastPacketTime = Date.now();
 
     const rrPresent = flags & 0x10;
+    if (!isCalibrating && calibrationStartTime) {
+        if (rrPresent) {
+            if (_hrPacketsWithoutRR >= 10) clearDeviceNotice();
+            _hrPacketsWithoutRR = 0;
+        } else if (++_hrPacketsWithoutRR === 10) {
+            showDeviceNotice('This device sends heart rate but no RR intervals: HRV indices and most plots cannot be computed. ' +
+                'Use a sensor that transmits RR intervals (e.g. a chest strap), or enable its HRV / beat-to-beat mode.');
+        }
+    }
     if (rrPresent) {
       let offset = hrFormat === 0 ? 2 : 3;
       if (flags & 0x08) offset += 2;               // Energy Expended field precedes the RR values
@@ -4426,8 +4767,8 @@ function handleHRData(event) {
                 rawTimestamps.push(timestamp);
 
                 // Store cleaned data (validated intervals only, with re-anchoring)
-                const lastRR = rrIntervals.length > 0 ? rrIntervals[rrIntervals.length - 1] : null;
-                for (const b of rrFilterStep(rr, timestamp, lastRR, _rrRun)) {
+                const cfg = sessionArtifactCfg || liveArtifactCfg();
+                for (const b of rrFilterStep(rr, timestamp, rrReference(rrIntervals, cfg), _rrRun, cfg)) {
                     rrIntervals.push(b.rr);
                     timestamps.push(b.t);
                 }
@@ -4448,6 +4789,249 @@ function handleHRData(event) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// Artifact detection & correction methods (live and retrospective)
+// ══════════════════════════════════════════════════════════════════════════
+// Kubios-style threshold levels: maximum deviation from the local median as a fraction of it
+// (Kubios quotes them in seconds at 60 bpm: very low 0.45 s … very strong 0.05 s, scaled with the mean RR)
+const MEDIAN_LEVELS = { vlow: 0.45, low: 0.35, medium: 0.25, strong: 0.15, vstrong: 0.05 };
+const MEDIAN_LEVEL_LABELS = { vlow: 'Very low', low: 'Low', medium: 'Medium', strong: 'Strong', vstrong: 'Very strong' };
+const ARTIFACT_METHODS = {
+    delta:    { label: 'Δ from previous beat (ms)',            live: true },
+    percent:  { label: '% of previous beat (Malik)',           live: true },
+    median:   { label: 'Local median (Kubios threshold levels)', live: true },
+    lipponen: { label: 'Automatic — Lipponen & Tarvainen 2019', live: false }
+};
+
+// Live settings → filter configuration (live correction is always 'remove': a beat cannot wait for its successor)
+function liveArtifactCfg() {
+    const m = ARTIFACT_METHODS[appSettings.artifactMethod]?.live ? appSettings.artifactMethod : 'delta';
+    return { method: m, deltaMs: appSettings.artifactThreshold || 300, percent: appSettings.artifactPercent || 20,
+             level: appSettings.artifactMedianLevel || 'medium', correction: 'remove' };
+}
+function artifactThreshold(ref, cfg) {
+    if (cfg.method === 'percent') return ref * (cfg.percent || 20) / 100;
+    if (cfg.method === 'median')  return ref * (MEDIAN_LEVELS[cfg.level] ?? 0.25);
+    return cfg.deltaMs || 300;
+}
+function describeArtifactCfg(cfg) {
+    if (!cfg) return 'not recorded';
+    let rule;
+    switch (cfg.method) {
+        case 'percent':  rule = `|RR − previous accepted RR| ≤ ${cfg.percent} %`; break;
+        case 'median':   rule = `|RR − ${cfg.centered ? 'centred' : 'running'} median of 11 beats| ≤ ${Math.round((MEDIAN_LEVELS[cfg.level] ?? .25) * 100)} % (${(MEDIAN_LEVEL_LABELS[cfg.level] || cfg.level).toLowerCase()} level)`; break;
+        case 'lipponen': rule = `Lipponen & Tarvainen 2019 automatic detection${cfg.iterative === false ? '' : ' (iterative)'}`; break;
+        default:         rule = `|RR − previous accepted RR| ≤ ${cfg.deltaMs} ms`;
+    }
+    const range = cfg.method === 'lipponen' ? '' : '250–2000 ms; ';
+    const reanchor = (cfg.method === 'lipponen' || cfg.centered) ? '' : `; re-anchored after ${REANCHOR_BEATS} consistent beats`;
+    const corr = cfg.correction !== 'interpolate' ? 'removed'
+        : cfg.method === 'lipponen' ? 'corrected (extra beats merged, missed beats split, ectopic / long-short beats realigned)'
+        : 'replaced by linear interpolation';
+    return `${range}${rule}${reanchor}; artifacts ${corr}`;
+}
+
+// ── Lipponen & Tarvainen (2019), as implemented in NeuroKit2 0.2.13 (signal_fixpeaks, method "kubios") ──
+// Mirrors NeuroKit2 step by step (same constants, rolling windows, reflect padding and flow control) so the
+// detections can be checked against it (verification/compare_artifacts.py). Peaks in ms; indices are peak indices.
+function _rollingCentered(x, w, fn) {
+    const n = x.length, h = (w - 1) >> 1, out = new Float64Array(n);
+    for (let k = 0; k < n; k++) out[k] = fn(x.slice(Math.max(0, k - h), Math.min(n, k + h + 1)).filter(v => !Number.isNaN(v)));
+    return out;
+}
+function _quantileLinear(a, q) {                       // pandas / numpy 'linear' interpolation
+    const b = Array.from(a).sort((x, y) => x - y), n = b.length;
+    if (!n) return NaN;
+    const pos = q * (n - 1), lo = Math.floor(pos), fr = pos - lo;
+    return lo + 1 < n ? b[lo] + (b[lo + 1] - b[lo]) * fr : b[lo];
+}
+function _lipponenThreshold(sig, alpha, w) {
+    const abs = Array.from(sig, Math.abs);
+    const q1 = _rollingCentered(abs, w, a => _quantileLinear(a, 0.25));
+    const q3 = _rollingCentered(abs, w, a => _quantileLinear(a, 0.75));
+    return Array.from(q1, (v, k) => alpha * ((q3[k] - v) / 2));
+}
+function lipponenFindArtifacts(peaks, opt = {}) {
+    const c1 = opt.c1 ?? 0.13, c2 = opt.c2 ?? 0.17, alpha = opt.alpha ?? 5.2, ww = opt.windowWidth ?? 91, mo = opt.medfiltOrder ?? 11;
+    const n = peaks.length;
+    const empty = { ectopic: [], missed: [], extra: [], longshort: [] };
+    if (n < 4) return empty;
+    const rr = new Float64Array(n);
+    for (let k = 1; k < n; k++) rr[k] = (peaks[k] - peaks[k - 1]) / 1000;
+    let s = 0; for (let k = 1; k < n; k++) s += rr[k]; rr[0] = s / (n - 1);
+    const drrs = new Float64Array(n);
+    for (let k = 1; k < n; k++) drrs[k] = rr[k] - rr[k - 1];
+    s = 0; for (let k = 1; k < n; k++) s += drrs[k]; drrs[0] = s / (n - 1);
+    const th1 = _lipponenThreshold(drrs, alpha, ww);
+    for (let k = 0; k < n; k++) drrs[k] = th1[k] !== 0 ? drrs[k] / th1[k] : NaN;
+    const pad = 2, P = k => { let i = k - pad; if (i < 0) i = -i; if (i > n - 1) i = 2 * (n - 1) - i; return drrs[i]; };
+    const s12 = new Float64Array(n), s22 = new Float64Array(n);
+    const nmax = (a, b) => (Number.isNaN(a) || Number.isNaN(b)) ? NaN : Math.max(a, b);
+    const nmin = (a, b) => (Number.isNaN(a) || Number.isNaN(b)) ? NaN : Math.min(a, b);
+    for (let d = pad; d < pad + n; d++) {
+        const v = P(d);
+        if (v > 0) s12[d - pad] = nmax(P(d - 1), P(d + 1)); else if (v < 0) s12[d - pad] = nmin(P(d - 1), P(d + 1));
+        if (v >= 0) s22[d - pad] = nmin(P(d + 1), P(d + 2)); else if (v < 0) s22[d - pad] = nmax(P(d + 1), P(d + 2));
+    }
+    const medrr = _rollingCentered(Array.from(rr), mo, _median);
+    const mrrs = new Float64Array(n);
+    for (let k = 0; k < n; k++) { const m = rr[k] - medrr[k]; mrrs[k] = m < 0 ? m * 2 : m; }
+    const th2 = _lipponenThreshold(mrrs, alpha, ww);
+    for (let k = 0; k < n; k++) mrrs[k] = th2[k] !== 0 ? mrrs[k] / th2[k] : NaN;
+
+    const out = { ectopic: [], missed: [], extra: [], longshort: [] };
+    let i = 0;
+    while (i < n - 2) {                                  // flow control of Figure 1 (and NeuroKit2's loop)
+        if (Math.abs(drrs[i]) <= 1) { i++; continue; }
+        const eq1 = drrs[i] > 1 && s12[i] < (-c1 * drrs[i] - c2);
+        const eq2 = drrs[i] < -1 && s12[i] > (-c1 * drrs[i] + c2);
+        if (eq1 || eq2) { out.ectopic.push(i); i++; continue; }
+        if (!(Math.abs(drrs[i]) > 1 || Math.abs(mrrs[i]) > 3)) { i++; continue; }
+        const cands = [i];
+        if (Math.abs(drrs[i + 1]) < Math.abs(drrs[i + 2])) cands.push(i + 1);
+        for (const j of cands) {
+            const eq3 = drrs[j] > 1 && s22[j] < -1;
+            const eq4 = Math.abs(mrrs[j]) > 3;
+            const eq5 = drrs[j] < -1 && s22[j] > 1;
+            if (!(eq3 || eq4 || eq5)) { i++; continue; }
+            const eq6 = Math.abs(rr[j] / 2 - medrr[j]) < th2[j];
+            const eq7 = Math.abs(rr[j] + rr[j + 1] - medrr[j]) < th2[j];
+            if (eq5 && eq7) { out.extra.push(j); i++; continue; }
+            if (eq3 && eq6) { out.missed.push(j); i++; continue; }
+            out.longshort.push(j); i++;
+        }
+    }
+    return out;
+}
+function _updateIdx(src, upd, delta) {
+    if (!upd.length) return upd;
+    for (const sIdx of src) upd = upd.map(u => u > sIdx ? u + delta : u);
+    return [...new Set(upd)].sort((a, b) => a - b);
+}
+function lipponenCorrectPeaks(art, peaks) {           // NeuroKit2 _correct_artifacts, on float peaks (no rounding)
+    let pk = Array.from(peaks);
+    let { missed, ectopic, longshort } = art;
+    const extra = art.extra;
+    if (extra.length) {
+        const del = new Set(extra); pk = pk.filter((_, k) => !del.has(k));
+        missed = _updateIdx(extra, missed, -1); ectopic = _updateIdx(extra, ectopic, -1); longshort = _updateIdx(extra, longshort, -1);
+    }
+    if (missed.length) {
+        const valid = missed.filter(m => m > 1 && m < pk.length);
+        const added = valid.map(m => pk[m - 1] + (pk[m] - pk[m - 1]) / 2);
+        const res = []; let a = 0;
+        for (let k = 0; k < pk.length; k++) { while (a < valid.length && valid[a] === k) res.push(added[a++]); res.push(pk[k]); }
+        pk = res;
+        ectopic = _updateIdx(missed, ectopic, 1); longshort = _updateIdx(missed, longshort, 1);
+    }
+    const misalign = (idcs) => {
+        const valid = idcs.filter(m => m > 1 && m < pk.length - 1);
+        if (!valid.length) return;
+        const interp = valid.map(m => pk[m - 1] + (pk[m + 1] - pk[m - 1]) / 2);
+        const del = new Set(valid);
+        pk = pk.filter((_, k) => !del.has(k)).concat(interp).sort((x, y) => x - y);
+    };
+    misalign(ectopic);
+    misalign(longshort);
+    return pk;
+}
+function lipponenFixPeaks(peaks, iterative = true) {
+    let art = lipponenFindArtifacts(peaks);
+    const first = art;
+    let clean = lipponenCorrectPeaks(art, peaks), iterations = 1;
+    if (iterative) {
+        let nCur = art.ectopic.length + art.missed.length + art.extra.length + art.longshort.length;
+        for (;;) {
+            const na = lipponenFindArtifacts(clean);
+            const nPrev = nCur;
+            nCur = na.ectopic.length + na.missed.length + na.extra.length + na.longshort.length;
+            if (nCur >= nPrev) break;
+            art = na; clean = lipponenCorrectPeaks(art, clean); iterations++;
+        }
+    }
+    return { first, last: art, peaks: clean, iterations };
+}
+
+// ── Retrospective cleaning of a whole raw series ──────────────────────────
+// Returns { rr, times, flagged (raw indices), counts, cfg } — the raw series itself is never modified.
+function applyArtifactCorrection(rawRR, rawTimes, cfg) {
+    const n = rawRR.length;
+    const res = { rr: [], times: [], flagged: [], counts: {}, cfg: { ...cfg } };
+    if (!n) return res;
+    if (cfg.method === 'lipponen') {
+        const peaks = [0]; for (let k = 0; k < n; k++) peaks.push(peaks[k] + rawRR[k]);
+        const fx = lipponenFixPeaks(peaks, cfg.iterative !== false);
+        const f = fx.first;
+        res.counts = { ectopic: f.ectopic.length, missed: f.missed.length, extra: f.extra.length, longshort: f.longshort.length, iterations: fx.iterations };
+        // peak index j = end of raw interval j-1; ectopic / extra beats disturb two intervals (j-1, j)
+        const bad = new Set();
+        const mark = (j, two) => { if (j - 1 >= 0 && j - 1 < n) bad.add(j - 1); if (two && j < n) bad.add(j); };
+        f.ectopic.forEach(j => mark(j, true)); f.extra.forEach(j => mark(j, true));
+        f.missed.forEach(j => mark(j, false)); f.longshort.forEach(j => mark(j, false));
+        res.flagged = [...bad].sort((a, b) => a - b);
+        if (cfg.correction === 'interpolate') {
+            // corrected peaks → intervals; times by mapping peak positions onto the raw clock
+            const rawPk = peaks.slice(1);
+            const toTime = p => {
+                let lo = 0, hi = n - 1;
+                if (p <= rawPk[0]) return rawTimes[0] + (p - rawPk[0]) / 1000;
+                if (p >= rawPk[n - 1]) return rawTimes[n - 1] + (p - rawPk[n - 1]) / 1000;
+                while (hi - lo > 1) { const m = (lo + hi) >> 1; if (rawPk[m] <= p) lo = m; else hi = m; }
+                const span = rawPk[hi] - rawPk[lo];
+                return span > 0 ? rawTimes[lo] + (rawTimes[hi] - rawTimes[lo]) * (p - rawPk[lo]) / span : rawTimes[lo];
+            };
+            for (let k = 1; k < fx.peaks.length; k++) {
+                res.rr.push(fx.peaks[k] - fx.peaks[k - 1]);
+                res.times.push(Math.round(toTime(fx.peaks[k]) * 1000) / 1000);
+            }
+            return res;
+        }
+        for (let k = 0; k < n; k++) if (!bad.has(k)) { res.rr.push(rawRR[k]); res.times.push(rawTimes[k]); }
+        return res;
+    }
+
+    // Methods with a per-beat rule: build the "good" mask
+    const good = new Uint8Array(n);
+    if (cfg.method === 'median' && cfg.centered) {
+        const frac = MEDIAN_LEVELS[cfg.level] ?? 0.25;
+        const inRange = v => v >= 250 && v <= 2000;
+        for (let k = 0; k < n; k++) {
+            if (!inRange(rawRR[k])) continue;
+            const w = rawRR.slice(Math.max(0, k - 5), Math.min(n, k + 6)).filter(inRange);
+            const med = _median(w);
+            if (Math.abs(rawRR[k] - med) <= frac * med) good[k] = 1;
+        }
+    } else {
+        const kept = [], run = [];
+        for (let k = 0; k < n; k++) {
+            for (const b of rrFilterStep(rawRR[k], rawTimes[k], rrReference(kept, cfg), run, cfg, k)) { kept.push(b.rr); good[b.i] = 1; }
+        }
+    }
+    let nRange = 0, nDev = 0;
+    for (let k = 0; k < n; k++) if (!good[k]) { res.flagged.push(k); if (rawRR[k] < 250 || rawRR[k] > 2000) nRange++; else nDev++; }
+    res.counts = { outOfRange: nRange, deviation: nDev };
+    if (cfg.correction === 'interpolate') {
+        const gi = []; for (let k = 0; k < n; k++) if (good[k]) gi.push(k);
+        if (!gi.length) return res;
+        let g = 0;
+        for (let k = 0; k < n; k++) {
+            let v = rawRR[k];
+            if (!good[k]) {
+                while (g + 1 < gi.length && gi[g + 1] < k) g++;
+                const a = gi[g] < k ? gi[g] : null;
+                const b = gi.find(x => x > k) ?? null;   // next good beat
+                if (a === null) v = rawRR[b];
+                else if (b === null) v = rawRR[a];
+                else { const dt = rawTimes[b] - rawTimes[a]; v = dt > 0 ? rawRR[a] + (rawRR[b] - rawRR[a]) * (rawTimes[k] - rawTimes[a]) / dt : (rawRR[a] + rawRR[b]) / 2; }
+            }
+            res.rr.push(v); res.times.push(rawTimes[k]);
+        }
+        return res;
+    }
+    for (let k = 0; k < n; k++) if (good[k]) { res.rr.push(rawRR[k]); res.times.push(rawTimes[k]); }
+    return res;
+}
+
 // Artifact filter with re-anchoring.
 // Rule 1 (unchanged): 250-2000 ms and |RR - preceding accepted RR| <= threshold.
 // Rule 2 (re-anchoring): REANCHOR_BEATS consecutive in-range intervals that fail rule 1 only because of the
@@ -4456,18 +5040,27 @@ function handleHRData(event) {
 // Without rule 2, one plausible-but-wrong accepted interval made every later normal beat fail (lock-out).
 // Isolated ectopic beats (short-long pairs) never form such a run, so they are still rejected.
 
-// One filter step. `lastRR` = last accepted RR (or null); `run` = pending run (mutated).
-// Returns the beats to append to the clean stream, in order (0, 1 or REANCHOR_BEATS of them).
-function rrFilterStep(rr, t, lastRR, run) {
-    const maxDiff = appSettings.artifactThreshold || 300;
+// One filter step. `ref` = reference RR (last accepted, or the running median for the 'median' method; null
+// at the start); `run` = pending run (mutated); `cfg` = artifact settings (default: the live settings).
+// Returns the beats to append to the clean stream, in order (0, 1 or REANCHOR_BEATS of them); `i` is passed
+// through so retrospective callers know which raw beats were kept.
+function rrFilterStep(rr, t, ref, run, cfg = null, i = -1) {
+    const c = cfg || liveArtifactCfg();
     if (rr < 250 || rr > 2000 || !isFinite(t)) { run.length = 0; return []; }
-    if (lastRR === null || Math.abs(rr - lastRR) <= maxDiff) { run.length = 0; return [{ rr, t }]; }
-    if (run.length && Math.abs(rr - run[run.length - 1].rr) > maxDiff) run.length = 0;
-    run.push({ rr, t });
+    if (ref === null || Math.abs(rr - ref) <= artifactThreshold(ref, c)) { run.length = 0; return [{ rr, t, i }]; }
+    if (run.length) { const p = run[run.length - 1].rr; if (Math.abs(rr - p) > artifactThreshold(p, c)) run.length = 0; }
+    run.push({ rr, t, i });
     if (run.length < REANCHOR_BEATS) return [];
     const accepted = run.slice();
     run.length = 0;
     return accepted;
+}
+// Reference for the next decision: last accepted beat, or (method 'median') the median of the last 11 accepted
+function rrReference(accepted, cfg) {
+    const n = accepted.length;
+    if (!n) return null;
+    if (cfg.method !== 'median' || n < 3) return accepted[n - 1];
+    return _median(accepted.slice(Math.max(0, n - 11)));
 }
 
 // Beat times for the RR values of ONE notification. A notification may carry several intervals but has a
@@ -4524,6 +5117,8 @@ function handleECGData(event) {
     const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     const frameType = data[0];
     if (frameType !== 0x00) return;
+    if (sessionDeviceInfo && sessionDeviceInfo.source !== 'ecg' && isConnected) sessionDeviceInfo.source = 'ecg';
+    if (ecgData.length === 0) setChartPlaceholder('ecgChart', null);
 
     const dataStart = 10;
     const sampleCount = Math.floor((data.length - dataStart) / 3);
@@ -5060,6 +5655,7 @@ function updateRRChart() {
 // Update RR chart with markers
 function updateRRChartWithMarkers() {
     if (timestamps.length === 0) return;
+    setChartPlaceholder('rrChart', null);
 
     const [wx, wy] = sliceWindow('rr', timestamps, rrIntervals);   // optional per-plot time window
     const [dx, dy] = decimateXY(wx, wy);                            // timestamps are monotonic: no sort needed
@@ -5170,6 +5766,7 @@ function updateRollingRMSSD() {
 // Update Poincaré chart with SD1/SD2 ellipse
 function updatePoincareChart() {
     if (rrIntervals.length < 2) return;
+    setChartPlaceholder('poincareChart', null);
     const rrN  = rrIntervals.slice(0, -1);
     const rrN1 = rrIntervals.slice(1);
     const stats = computePoincareStats(rrIntervals);
@@ -5266,7 +5863,7 @@ function updateHRChart() {
             placeholder = document.createElement('div');
             placeholder.className = 'chart-placeholder';
             placeholder.innerHTML = `<div class="chart-placeholder-icon">💓</div>
-                <div class="chart-placeholder-text">Connect device to see HR data</div>`;
+                <div class="chart-placeholder-text">Waiting for data — connect a sensor or open a saved session</div>`;
             el.appendChild(placeholder);
         }
         el.classList.add('chart-blurred');
@@ -5399,7 +5996,7 @@ function storedSessionCSV(s) {
         tags: s.tags || [], rrCount: s.rrIntervals.length,
         rawRRCount: s.rawRRIntervals?.length || s.rrIntervals.length,
         eventCount: s.eventMarkers?.length || 0, includeRaw: false,
-        calibrationSecs: s.calibrationSecs,
+        calibrationSecs: s.calibrationSecs, device: s.device, importedFrom: s.importedFrom, artifactFilter: s.artifactFilter,
         sessionTimestamps: s.timestamps, sessionEventMarkers: s.eventMarkers || []
     }) + rrCsvBody(s.rrIntervals, s.timestamps, s.eventMarkers);
 }
@@ -5416,6 +6013,9 @@ function generateMetadataHeader(sessionData) {
     } = sessionData;
     // Calibration actually used: the stored session's own value, or the live recording's
     const calibSecs = sessionData.live ? sessionCalibrationSecs : sessionData.calibrationSecs;
+    const devInfo   = sessionData.live ? sessionDeviceInfo : sessionData.device;
+    const imported  = sessionData.live ? sessionImportInfo : sessionData.importedFrom;
+    const artCfg    = sessionData.live ? sessionArtifactCfg : sessionData.artifactFilter;
 
     const sessionDate = new Date(startTime);
     const dateStr = sessionDate.toISOString().slice(0, 19).replace('T', ' ');
@@ -5434,13 +6034,16 @@ function generateMetadataHeader(sessionData) {
     const removedRR = Math.max(0, rawRRCount - rrCount);
 
     let header = '';
-    header += `# Polar H10 HRV Data Export\n`;
+    header += `# CardioTrace HRV Data Export\n`;
     header += `# Generated: ${new Date().toISOString()}\n`;
     header += `#\n`;
     header += `# Session Information\n`;
     header += `# Date: ${dateStr}\n`;
     header += `# Duration: ${formatDuration(actualDuration)}\n`;
     header += `# Filename: ${filename}\n`;
+    header += imported
+        ? `# Source: imported file ${imported.filename || ''} (${imported.format || 'RR list'})\n`
+        : `# Device: ${describeRRSource(devInfo)}\n`;
     header += `# Tags: ${tags.length > 0 ? tags.join(', ') : 'None'}\n`;
     header += `#\n`;
     header += `# Data Quality\n`;
@@ -5448,7 +6051,10 @@ function generateMetadataHeader(sessionData) {
     header += `# Total RR Intervals: ${includeRaw ? rawRRCount : rrCount}\n`;
     header += `# Valid Intervals: ${rrCount} (${percentValid}%)\n`;
     header += `# Removed Artifacts: ${removedRR}\n`;
-    header += calibSecs != null
+    header += `# Artifact Filter: ${describeArtifactCfg(artCfg)}\n`;
+    header += imported
+        ? `# Calibration Period: not applicable (imported file)\n`
+        : calibSecs != null
         ? `# Calibration Period: ${calibSecs} seconds (excluded from data)\n`
         : `# Calibration Period: not recorded (session saved by an older version)\n`;
     header += `#\n`;
@@ -5466,7 +6072,7 @@ function generateMetadataHeader(sessionData) {
 // Generate HTML Report (print-to-PDF friendly)
 async function generatePDFReport() {
     if (rrIntervals.length === 0) {
-        alert('No data available for report generation');
+        notify('No data for a report yet — record or open a session first.', 'warn');
         return;
     }
 
@@ -5938,9 +6544,11 @@ ${reportOn('metadata') ? `<!-- ── SESSION METADATA ────────�
       <tr><th style="width:180px">Session Name</th><td>${escapeHTML(sessionName)}</td></tr>
       <tr><th>Start Time</th><td>${sessionDate.toLocaleString('en-US',{dateStyle:'full',timeStyle:'medium'})}</td></tr>
       <tr><th>Duration</th><td>${fmtD(duration)}</td></tr>
-      <tr><th>Calibration Period</th><td>${sessionCalibrationSecs != null ? sessionCalibrationSecs + ' seconds (excluded from data)' : 'not recorded'}</td></tr>
+      <tr><th>${sessionImportInfo ? 'Source' : 'Device'}</th><td>${escapeHTML(sessionImportInfo ? `imported file ${sessionImportInfo.filename || ''} (${sessionImportInfo.format || 'RR list'})` : describeRRSource(sessionDeviceInfo))}</td></tr>
+      <tr><th>Calibration Period</th><td>${sessionImportInfo ? 'not applicable (imported file)' : sessionCalibrationSecs != null ? sessionCalibrationSecs + ' seconds (excluded from data)' : 'not recorded'}</td></tr>
       <tr><th>Raw RR Intervals</th><td>${rawRRIntervals.length.toLocaleString()}</td></tr>
       <tr><th>Valid (Clean) Intervals</th><td>${rrIntervals.length.toLocaleString()} (${dquality}%)</td></tr>
+      <tr><th>Artifact Filter</th><td>${escapeHTML(describeArtifactCfg(sessionArtifactCfg))}</td></tr>
       <tr><th>Artifacts Removed</th><td>${Math.max(0, rawRRIntervals.length - rrIntervals.length).toLocaleString()}</td></tr>
       <tr><th>Tags</th><td>${tagsHtml}</td></tr>
       ${peakHR > 0 ? `<tr><th>Peak Heart Rate</th><td>${peakHR} bpm</td></tr>` : ''}
@@ -6020,7 +6628,7 @@ ${reportOn('references') ? `<!-- ── REFERENCE RANGES ───────�
 
     } catch (err) {
         console.error('Report generation failed:', err);
-        alert('Report generation failed. See console for details.');
+        notify('Report generation failed — see the browser console for details.', 'error');
     } finally {
         reportBtn.disabled = false;
         reportBtn.textContent = '📄 Report';
@@ -6030,7 +6638,7 @@ ${reportOn('references') ? `<!-- ── REFERENCE RANGES ───────�
 // Export data
 function exportData() {
     if (rrIntervals.length === 0 && rawRRIntervals.length === 0) {
-        alert('No data to export');
+        notify('No data to download yet.', 'warn');
         return;
     }
 
@@ -6088,7 +6696,7 @@ function exportData() {
 // Copy to clipboard
 async function copyToClipboard() {
     if (rrIntervals.length === 0 && rawRRIntervals.length === 0) {
-        alert('No data to copy');
+        notify('No data to copy yet.', 'warn');
         return;
     }
 
@@ -6131,7 +6739,7 @@ async function copyToClipboard() {
         console.log('✓ Copied to clipboard');
     } catch (err) {
         console.error('Failed to copy:', err);
-        alert('Failed to copy to clipboard');
+        notify('Could not copy to the clipboard (permission denied).', 'error');
     }
 }
 
@@ -6251,7 +6859,7 @@ function importSettings(file) {
             if (d.gridLayout) localStorage.setItem('cardioTraceGridLayout', JSON.stringify(d.gridLayout));
             location.reload();                       // simplest way to re-apply everything consistently
         } catch (err) {
-            alert('Could not import settings: ' + err.message);
+            notify('Could not import settings: ' + err.message, 'error');
         }
     };
     reader.readAsText(file);
@@ -6589,6 +7197,252 @@ function initReportOptions() {
     });
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// Artifact panel — preview, re-clean stored sessions, choose the live method
+// ══════════════════════════════════════════════════════════════════════════
+let _artTarget = { kind: 'none' };   // { kind: 'session', id } | { kind: 'batch', ids } | { kind: 'live' } | { kind: 'none' }
+let _artPreviewSrc = null;           // { rr, times, label } raw series used for the preview
+
+function artPanelCfg() { return { ...appSettings.artifactRetro, centered: appSettings.artifactRetro.method === 'median' }; }
+
+// "Last minute" stats of a clean series, as stored in stats.avgRR / stats.rmssd by live saves
+function windowStatsOf(rr, ts, windowSecs = 60) {
+    if (!rr.length) return { avgRR: null, rmssd: null };
+    const from = ts[ts.length - 1] - windowSecs;
+    let n = 0, sum = 0, prev = null, sq = 0, pairs = 0;
+    for (let i = 0; i < rr.length; i++) {
+        if (ts[i] < from) continue;
+        n++; sum += rr[i];
+        if (prev !== null) { sq += (rr[i] - prev) ** 2; pairs++; }
+        prev = rr[i];
+    }
+    return { avgRR: n ? sum / n : null, rmssd: pairs ? Math.sqrt(sq / pairs) : null };
+}
+
+function updateArtifactSettingsSummary() {
+    const el = document.getElementById('artifactLiveSummary');
+    if (el) el.textContent = `Live: ${describeArtifactCfg(liveArtifactCfg())}.` +
+        (isConnected ? ' Changes apply from the next recording.' : '');
+    document.querySelectorAll('#artifactGroup .sett-chip').forEach(btn =>
+        btn.classList.toggle('active', appSettings.artifactMethod === 'delta' && parseInt(btn.dataset.val) === appSettings.artifactThreshold));
+}
+
+async function openArtifactPanel(target = null) {
+    _artTarget = target || (isConnected ? { kind: 'live' } : (shownSessionId != null ? { kind: 'session', id: shownSessionId } : { kind: 'none' }));
+    _artPreviewSrc = null;
+    const tEl = document.getElementById('artifactTarget');
+    if (_artTarget.kind === 'session') {
+        const s = await loadSession(_artTarget.id);
+        if (s) _artPreviewSrc = { rr: s.rawRRIntervals?.length ? s.rawRRIntervals : s.rrIntervals, times: s.rawRRIntervals?.length ? s.rawTimestamps : s.timestamps };
+        tEl.textContent = `Session: ${s?.filename || ''} — preview and apply to this stored session.`;
+    } else if (_artTarget.kind === 'batch') {
+        const s = await loadSession(_artTarget.ids[0]);
+        if (s) _artPreviewSrc = { rr: s.rawRRIntervals?.length ? s.rawRRIntervals : s.rrIntervals, times: s.rawRRIntervals?.length ? s.rawTimestamps : s.timestamps };
+        tEl.textContent = `${_artTarget.ids.length} selected session(s) — preview shows "${s?.filename || ''}".`;
+    } else if (_artTarget.kind === 'live') {
+        _artPreviewSrc = { rr: rawRRIntervals.slice(), times: rawTimestamps.slice() };
+        tEl.textContent = 'Live recording — preview on the data received so far. Stored sessions can be re-cleaned after disconnecting.';
+    } else {
+        tEl.textContent = 'No session shown: open one from History (or select sessions in Export) to re-clean it. You can still choose the live method.';
+    }
+    renderArtifactPanel();
+    document.getElementById('artifactPanel').classList.add('active');
+    document.getElementById('artifactOverlay').classList.add('active');
+}
+function closeArtifactPanel() {
+    document.getElementById('artifactPanel').classList.remove('active');
+    document.getElementById('artifactOverlay').classList.remove('active');
+}
+
+function renderArtifactPanel() {
+    const cfg = artPanelCfg();
+    const mark = (sel, val) => document.querySelectorAll(sel).forEach(b => b.classList.toggle('active', String(b.dataset.val) === String(val)));
+    mark('#artMethodGroup .sett-chip', cfg.method);
+    mark('#artDeltaGroup .sett-chip', cfg.deltaMs);
+    mark('#artPercentGroup .sett-chip', cfg.percent);
+    mark('#artLevelGroup .sett-chip', cfg.level);
+    mark('#artCorrectionGroup .sett-chip', cfg.correction);
+    document.getElementById('artIterative').checked = cfg.iterative !== false;
+    document.querySelectorAll('#artifactPanel .art-param').forEach(el => el.classList.toggle('is-active', el.dataset.for === cfg.method));
+    document.getElementById('artifactDescription').textContent = describeArtifactCfg(cfg);
+
+    const apply = document.getElementById('artifactApplyBtn');
+    apply.disabled = !(_artTarget.kind === 'session' || _artTarget.kind === 'batch');
+    apply.textContent = _artTarget.kind === 'batch' ? `Apply to ${_artTarget.ids.length} session(s)` : 'Apply to this session';
+    const live = document.getElementById('artifactLiveBtn');
+    live.disabled = !ARTIFACT_METHODS[cfg.method].live;
+    live.title = live.disabled ? 'The automatic method needs the following beats: retrospective only' : 'Use this detection method for the next recordings (artifacts are removed live)';
+
+    const sum = document.getElementById('artifactSummary');
+    const src = _artPreviewSrc;
+    if (!src || !src.rr || src.rr.length < 4) {
+        sum.textContent = 'No data to preview.';
+        try { Plotly.purge('artifactPreviewChart'); } catch (e) { /* not drawn yet */ }
+        return;
+    }
+    const res = applyArtifactCorrection(src.rr, src.times, cfg);
+    const n = src.rr.length, f = res.flagged.length;
+    const c = res.counts;
+    const detail = cfg.method === 'lipponen'
+        ? `ectopic ${c.ectopic} · missed ${c.missed} · extra ${c.extra} · long/short ${c.longshort}${c.iterations > 1 ? ` · ${c.iterations} passes` : ''}`
+        : `out of range ${c.outOfRange} · excessive deviation ${c.deviation}`;
+    sum.innerHTML = `<b>${n}</b> raw intervals · <b>${f}</b> flagged (${(f / n * 100).toFixed(1)} %) — ${escapeHTML(detail)}<br>` +
+        `Result: <b>${res.rr.length}</b> intervals (${cfg.correction === 'interpolate' ? 'corrected' : 'artifacts removed'})`;
+    const [rx, ry] = decimateXY(src.times, src.rr);
+    const [cx, cy] = decimateXY(res.times, res.rr);
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    const fg = isLight ? '#4b5563' : '#9ca3af';
+    Plotly.react('artifactPreviewChart', [
+        { x: rx, y: ry, type: 'scatter', mode: 'lines', name: 'Raw', line: { color: 'rgba(156,163,175,0.9)', width: 1, dash: 'dot' } },
+        { x: cx, y: cy, type: 'scatter', mode: 'lines', name: 'Clean', line: { color: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#6366f1', width: 1.5 } },
+        { x: res.flagged.map(k => src.times[k]), y: res.flagged.map(k => src.rr[k]), type: 'scatter', mode: 'markers', name: 'Flagged',
+          marker: { color: '#ef4444', size: 7, symbol: 'x' } }
+    ], {
+        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', margin: { t: 8, r: 8, l: 44, b: 30 }, autosize: true,
+        font: { color: fg, family: 'Inter, sans-serif', size: 10 }, showlegend: true,
+        legend: { orientation: 'h', y: 1.12, x: 0, bgcolor: 'rgba(0,0,0,0)' },
+        xaxis: { title: '', color: fg, showgrid: false, zeroline: false }, yaxis: { title: 'RR (ms)', color: fg, showgrid: false, zeroline: false }
+    }, { responsive: true, displayModeBar: false });
+}
+
+// Re-clean one stored session from its raw stream (raw is never changed); returns a short result line
+async function reprocessSession(id, cfg) {
+    if (isLiveSession(id)) throw new Error('it is being recorded');
+    const s = await loadSession(id);
+    if (!s) throw new Error('not found');
+    const raw  = s.rawRRIntervals?.length ? s.rawRRIntervals : s.rrIntervals;     // very old sessions: clean = raw
+    const rawT = s.rawRRIntervals?.length ? s.rawTimestamps : s.timestamps;
+    const res = applyArtifactCorrection(raw, rawT, cfg);
+    if (res.rr.length < 2) throw new Error('fewer than 2 intervals would remain');
+    const win = windowStatsOf(res.rr, res.times);
+    const sri = res.rr.length >= 50 ? calculateSRI(res.rr, res.times) : null;
+    await updateSession(id, {
+        rrIntervals: res.rr, timestamps: res.times, rawRRIntervals: raw, rawTimestamps: rawT,
+        stats: { samples: res.rr.length, avgRR: win.avgRR, rmssd: win.rmssd },
+        sri: sri ? sri.score : 0, sriComponents: sri ? sri.components : { rmssd: 0, lfhf: 0, hrRecovery: 0 }, peakHR: sri ? sri.peakHR : 0,
+        artifactFilter: { ...cfg, appliedAt: new Date().toISOString(), flagged: res.flagged.length, counts: res.counts }
+    });
+    return `✓ ${s.filename || id}: ${res.flagged.length} of ${raw.length} flagged → ${res.rr.length} intervals`;
+}
+
+async function applyArtifactPanel() {
+    const cfg = artPanelCfg();
+    const ids = _artTarget.kind === 'batch' ? _artTarget.ids : _artTarget.kind === 'session' ? [_artTarget.id] : [];
+    if (!ids.length) return;
+    if (ids.length > 1 && !confirm(`Re-clean ${ids.length} sessions with:\n${describeArtifactCfg(cfg)}?\n\nRaw data are kept; this can be redone with another method.`)) return;
+    const lines = [];
+    for (const id of ids) {
+        try { lines.push(await reprocessSession(id, cfg)); } catch (e) { lines.push(`✗ session ${id}: ${e.message || e}`); }
+    }
+    closeArtifactPanel();
+    await updateHistoryBadge();
+    if (shownSessionId != null && ids.includes(shownSessionId) && !isConnected) await restoreSession(shownSessionId);
+    if (currentTab === 'history') await renderHistory();
+    if (currentTab === 'export') await renderExportTab();
+    if (currentTab === 'analyze') await renderAnalyzeTab();
+    const failed = lines.filter(l => l.startsWith('✗')).length;
+    notify(ids.length > 1 ? `Re-cleaned ${ids.length - failed} of ${ids.length} sessions` : (failed ? 'Re-cleaning failed' : 'Session re-cleaned'),
+        failed ? 'warn' : 'success', { detail: lines });
+}
+
+function useArtifactPanelForLive() {
+    const cfg = artPanelCfg();
+    if (!ARTIFACT_METHODS[cfg.method].live) return;
+    appSettings.artifactMethod = cfg.method;
+    appSettings.artifactThreshold = cfg.deltaMs;
+    appSettings.artifactPercent = cfg.percent;
+    appSettings.artifactMedianLevel = cfg.level;
+    saveSettings();
+    updateArtifactSettingsSummary();
+    notify(`Live artifact filter set${isConnected ? ' — it applies from the next recording' : ''}`, 'success', { detail: [describeArtifactCfg(liveArtifactCfg())] });
+}
+
+function initArtifactPanel() {
+    const setRetro = patch => { appSettings.artifactRetro = { ...appSettings.artifactRetro, ...patch }; saveSettings(); renderArtifactPanel(); };
+    const chips = (id, fn) => document.getElementById(id).addEventListener('click', e => { const b = e.target.closest('.sett-chip'); if (b) fn(b.dataset.val); });
+    chips('artMethodGroup', v => setRetro({ method: v }));
+    chips('artDeltaGroup', v => setRetro({ deltaMs: parseInt(v) }));
+    chips('artPercentGroup', v => setRetro({ percent: parseInt(v) }));
+    chips('artLevelGroup', v => setRetro({ level: v }));
+    chips('artCorrectionGroup', v => setRetro({ correction: v }));
+    document.getElementById('artIterative').addEventListener('change', e => setRetro({ iterative: e.target.checked }));
+    document.getElementById('artifactClose').addEventListener('click', closeArtifactPanel);
+    document.getElementById('artifactOverlay').addEventListener('click', closeArtifactPanel);
+    document.getElementById('artifactApplyBtn').addEventListener('click', applyArtifactPanel);
+    document.getElementById('artifactLiveBtn').addEventListener('click', useArtifactPanelForLive);
+    document.getElementById('artifactBtn').addEventListener('click', () => openArtifactPanel());
+    document.getElementById('artifactMoreBtn').addEventListener('click', () => { closeSettings(); openArtifactPanel(); });
+    document.getElementById('exportArtifactBtn').addEventListener('click', () => {
+        if (exportSelectedIds.size) openArtifactPanel({ kind: 'batch', ids: [...exportSelectedIds] });
+    });
+    updateArtifactSettingsSummary();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Record-tab context banner: what am I looking at, and what can I do next?
+//   nothing yet  → short "get started" guide        live → hidden (status, timer and charts say it)
+//   saved session → name, date, duration, source, artifact filter + Artifacts / Report / Close
+// ══════════════════════════════════════════════════════════════════════════
+function updateSessionBanner() {
+    const el = document.getElementById('sessionBanner');
+    const hasData = rrIntervals.length > 0 || rawRRIntervals.length > 0;
+    const viewing = !isConnected && shownSessionId != null && hasData;
+    if (resetBtn) {
+        resetBtn.textContent = viewing ? '✕ Close Session' : 'Reset Session';
+        resetBtn.classList.toggle('btn-danger', !viewing);
+        resetBtn.classList.toggle('btn-secondary', viewing);
+        resetBtn.title = viewing ? 'Close the saved session (it stays in History)' : 'Clear the data of the current recording';
+        resetBtn.disabled = !isConnected && !hasData;
+    }
+    if (!el) return;
+    if (isConnected) { el.hidden = true; return; }
+    if (viewing) {
+        const m = shownSessionMeta || {};
+        const source = sessionImportInfo ? `📥 imported (${sessionImportInfo.format || 'file'})`
+                     : sessionDeviceInfo ? `${sessionDeviceInfo.source === 'ppg' ? '⌚' : '🫀'} ${describeRRSource(sessionDeviceInfo)}` : '';
+        const filt = sessionArtifactCfg ? `🧹 ${ARTIFACT_METHODS[sessionArtifactCfg.method]?.label || ''}` : '';
+        el.className = 'session-banner session-banner--stored';
+        el.innerHTML = `<div class="sb-main"><span class="sb-icon">📂</span><div class="sb-text">
+                <div class="sb-title">Saved session · <b>${escapeHTML(m.name || '')}</b></div>
+                <div class="sb-meta">${[m.subject ? `👤 ${m.subject}` : '', m.startTime ? new Date(m.startTime).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '',
+                    formatDuration(m.duration || 0), source, filt].filter(Boolean).map(escapeHTML).join(' · ')}</div></div></div>
+            <div class="sb-actions">
+                <button class="btn btn-secondary" data-act="artifacts" type="button">🧹 Artifacts</button>
+                <button class="btn btn-secondary" data-act="report" type="button">📄 Report</button>
+                <button class="btn btn-secondary" data-act="close" type="button">✕ Close</button>
+            </div>`;
+        el.hidden = false;
+        return;
+    }
+    if (!hasData) {
+        el.className = 'session-banner session-banner--guide';
+        el.innerHTML = `<div class="sb-steps">
+                <div class="sb-step"><span>1</span><p>Choose the <b>subject</b> and, optionally, a <b>protocol</b></p></div>
+                <div class="sb-step"><span>2</span><p><b>Connect</b> a Bluetooth heart-rate sensor that sends RR intervals (e.g. Polar H10)</p></div>
+                <div class="sb-step"><span>3</span><p><b>Mark events</b> while recording — the session is auto-saved</p></div>
+                <div class="sb-step"><span>4</span><p><b>Disconnect</b> to finish; review it in History, Analyze or Export</p></div>
+            </div>
+            <div class="sb-actions">
+                <button class="btn btn-secondary" data-act="history" type="button">📋 Open a saved session</button>
+                <button class="btn btn-secondary" data-act="import" type="button">📥 Import RR files</button>
+            </div>`;
+        el.hidden = false;
+        return;
+    }
+    el.hidden = true;
+}
+function initSessionBanner() {
+    document.getElementById('sessionBanner')?.addEventListener('click', e => {
+        const act = e.target.closest('[data-act]')?.dataset.act;
+        if (act === 'artifacts') openArtifactPanel();
+        else if (act === 'report') generatePDFReport();
+        else if (act === 'close') performSessionReset(false);
+        else if (act === 'history') switchTab('history');
+        else if (act === 'import') document.getElementById('importRRFile')?.click();
+    });
+    updateSessionBanner();
+}
+
 // Initialize on page load
 (async () => {
     try {
@@ -6597,14 +7451,16 @@ function initReportOptions() {
         initCustomizationControls();
         initChartTools();
         initReportOptions();
+        initArtifactPanel();
+        initSessionBanner();
 
         try {
             await initDB();
         } catch (e) {
             // Blocked storage / some private modes: keep the app usable (live view, exports), say what is missing
             console.error('IndexedDB unavailable:', e);
-            alert('Session history is not available in this browser (storage is blocked or disabled). ' +
-                  'You can still record, but sessions are NOT saved automatically: export each recording before closing the page.');
+            notify('Session history is not available in this browser (storage is blocked or disabled). ' +
+                  'You can still record, but sessions are NOT saved automatically: export each recording before closing the page.', 'error', { persist: true });
         }
         await updateHistoryBadge();
         loadTheme();
@@ -6629,12 +7485,26 @@ function initReportOptions() {
     }
 })();
 
+// Show (icon + text) or remove (icon = null) a placeholder on one chart
+function setChartPlaceholder(id, icon, text = '') {
+    const el = document.getElementById(id);
+    if (!el) return;
+    let ph = el.querySelector('.chart-placeholder');
+    if (!icon) { if (ph) ph.remove(); el.classList.remove('chart-blurred'); return; }
+    if (!ph) { ph = document.createElement('div'); ph.className = 'chart-placeholder'; el.appendChild(ph); }
+    ph.innerHTML = `<div class="chart-placeholder-icon">${icon}</div><div class="chart-placeholder-text">${escapeHTML(text)}</div>`;
+    el.classList.add('chart-blurred');
+}
+
 // Initialize chart placeholders
 function initChartPlaceholders() {
     const placeholders = [
+        { id: 'ecgChart',          icon: '〰️', text: 'The ECG appears here while recording with a Polar sensor' },
+        { id: 'rrChart',           icon: '💓', text: 'Waiting for data — connect a sensor or open a saved session' },
+        { id: 'poincareChart',     icon: '⬚',  text: 'Waiting for data — connect a sensor or open a saved session' },
         { id: 'rollingRMSSDChart', icon: '⏱️', text: 'Chart available after 30 seconds' },
         { id: 'psdChart',          icon: '🌊', text: 'Spectrogram available after 50 RR intervals' },
-        { id: 'hrChart',           icon: '💓', text: 'Connect device to see HR data' },
+        { id: 'hrChart',           icon: '💓', text: 'Waiting for data — connect a sensor or open a saved session' },
         { id: 'vagalProxyChart',   icon: '🧠', text: 'Chart available after 30 seconds' },
     ];
     placeholders.forEach(({ id, icon, text }) => {
